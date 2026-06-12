@@ -155,7 +155,12 @@ def _parse_yf_news_item(item):
     return title.strip(), publisher.strip()
 
 def groq_synthesize(ticker_name, articles, groq_key):
-    """Appelle Groq (Llama 3.1 70B) pour synthétiser les articles d'un ticker en 2 phrases."""
+    """Appelle Groq via SDK officiel (évite le blocage Cloudflare de urllib)."""
+    try:
+        from groq import Groq
+    except ImportError:
+        print(" [groq ERR: package 'groq' non installé]", end="", flush=True)
+        return None
     texts = []
     for item in articles[:3]:
         headline = item.get("headline", "")
@@ -170,27 +175,14 @@ def groq_synthesize(ticker_name, articles, groq_key):
         + "\n\nEn 2 phrases maximum, explique la tendance actuelle et pourquoi ce titre "
         "est potentiellement intéressant. Sois factuel et concis. Réponds en français."
     )
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "max_tokens": 120,
-        "messages": [{"role": "user", "content": prompt}]
-    }
     try:
-        req = urllib.request.Request(
-            "https://api.groq.com/openai/v1/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {groq_key}",
-                "content-type": "application/json",
-            }
+        client = Groq(api_key=groq_key)
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
         )
-        with urllib.request.urlopen(req, timeout=15) as r:
-            result = json.loads(r.read())
-        return result["choices"][0]["message"]["content"].strip()
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore")[:300]
-        print(f" [groq {e.code}: {body}]", end="", flush=True)
-        return None
+        return response.choices[0].message.content.strip()
     except Exception as e:
         print(f" [groq ERR: {e}]", end="", flush=True)
         return None
