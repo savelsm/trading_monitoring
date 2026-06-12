@@ -17,7 +17,7 @@ CAC40 = {
     "HO.PA":"Thales","KER.PA":"Kering","LR.PA":"Legrand","MC.PA":"LVMH",
     "ML.PA":"Michelin","ORA.PA":"Orange","PUB.PA":"Publicis Groupe","RI.PA":"Pernod Ricard",
     "RMS.PA":"Hermès","RNO.PA":"Renault","SAF.PA":"Safran","SAN.PA":"Sanofi",
-    "SGO.PA":"Saint-Gobain","STLAP.PA":"Stellantis","STM.PA":"STMicroelectronics",
+    "SGO.PA":"Saint-Gobain","STLAP.PA":"Stellantis","STMPA.PA":"STMicroelectronics",
     "SU.PA":"Schneider Electric","TTE.PA":"TotalEnergies","URW.PA":"Unibail-Rodamco",
     "VIE.PA":"Veolia","ACA.PA":"Crédit Agricole","BVI.PA":"Bureau Veritas",
     "RCO.PA":"Remy Cointreau","NK.PA":"Imerys","SOP.PA":"Sopra Steria",
@@ -688,9 +688,13 @@ def main():
     if not ha and not hc: print("  Aucun signal notable hors-PEA.")
 
     sec("RÉSUMÉ","=")
-    print(f"  Valeurs analysées (PEA) : {len(sig)}")
+    total_ok = len(sig) + len(snp)
+    total_uni = sum(map(len, [CAC40, DAX, OTHER_EU, PEA_ETFS, NON_PEA]))
+    echecs = total_uni - total_ok
+    print(f"  Valeurs analysées : {len(sig)} PEA + {len(snp)} hors-PEA/Asie = {total_ok}"
+          + (f" ({echecs} échec(s) téléchargement)" if echecs else ""))
     print(f"  A (achat fort) : {len(ca)}  |  B (surveiller) : {len(cb)}  |  C (tendance) : {len(cc)}  |  D (surachat) : {len(cd)}")
-    print(f"  Compressions BB : {len(sq)}  |  Hors-PEA/Asie : {len(snp)}")
+    print(f"  Compressions BB : {len(sq)}")
     print("="*W)
 
     # News yfinance pour les valeurs signalées
