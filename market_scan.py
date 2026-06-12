@@ -171,7 +171,7 @@ def groq_synthesize(ticker_name, articles, groq_key):
         "est potentiellement intéressant. Sois factuel et concis. Réponds en français."
     )
     payload = {
-        "model": "llama-3.1-70b-versatile",
+        "model": "llama-3.3-70b-versatile",
         "max_tokens": 120,
         "messages": [{"role": "user", "content": prompt}]
     }
@@ -274,7 +274,10 @@ def get_yahoo_trending():
             req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
-            quotes = data["finance"]["result"][0]["quotes"]
+            result = data.get("finance", {}).get("result") or []
+            if not result:
+                continue
+            quotes = result[0].get("quotes", [])
             for q in quotes:
                 sym = q.get("symbol","")
                 if any(sym.endswith(s) for s in EU_SUFFIXES+ASIA_SUFFIXES):
