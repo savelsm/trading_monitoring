@@ -80,32 +80,92 @@ STOP_WORDS = {
     "it","this","that","with","from","will","after","but","or","new","said","says",
     "may","can","also","than","into","been","about","over","up","out","their",
 }
+FINANCIAL_TERMS = {
+    # Français
+    "résultats","bénéfice","dividende","acquisition","fusion","rachat","chiffre",
+    "croissance","perte","dette","restructuration","guidance","trimestre","annuel",
+    "hausse","baisse","progression","recul","record","objectif","prévision",
+    "investissement","contrat","partenariat","cession","introduction","offre",
+    # Anglais
+    "earnings","profit","revenue","dividend","buyback","merger","outlook","downgrade",
+    "upgrade","target","beat","miss","rally","surge","guidance","acquisition",
+    "quarterly","annual","growth","loss","debt","restructuring","contract","deal",
+}
+POSITIVE_WORDS = {
+    "hausse","progression","record","croissance","beat","surge","rally","strong",
+    "profit","dividend","upgrade","gains","rise","growth","positive","exceeded",
+}
+NEGATIVE_WORDS = {
+    "baisse","perte","avertissement","miss","downgrade","restructuration","dette",
+    "chute","loss","decline","warning","cut","disappoints","below","weak","risk",
+}
+
+def sentiment_icon(title):
+    words = {w.lower() for w in re.findall(r'\b\w+\b', title)}
+    pos = len(words & POSITIVE_WORDS)
+    neg = len(words & NEGATIVE_WORDS)
+    if pos > neg: return "🟢"
+    if neg > pos: return "🔴"
+    return "⚪"
 
 def extract_keywords(text, n=5):
     words = re.findall(r'\b[a-zA-ZÀ-ÿ]{4,}\b', text)
     filtered = [w for w in words if w.lower() not in STOP_WORDS]
     freq = {}
     for w in filtered:
-        freq[w.lower()] = freq.get(w.lower(), 0) + 1
-    top = sorted(freq, key=freq.get, reverse=True)[:n]
-    return top
+        w_lower = w.lower()
+        score = 3 if w_lower in FINANCIAL_TERMS else 1
+        freq[w_lower] = freq.get(w_lower, 0) + score
+    return sorted(freq, key=freq.get, reverse=True)[:n]
+
+def _finnhub_news(ticker, finnhub_key, days=3):
+    """Récupère les actualités Finnhub pour un ticker (format Yahoo ex: BNP.PA → BNP)."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    date_from = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+    date_to = now.strftime("%Y-%m-%d")
+    # Finnhub utilise le symbole sans suffixe bourse pour les actions EU
+    sym = ticker.split(".")[0] if "." in ticker else ticker
+    url = (f"https://finnhub.io/api/v1/company-news?symbol={sym}"
+           f"&from={date_from}&to={date_to}&token={finnhub_key}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read())
+        return data if isinstance(data, list) else []
+    except:
+        return []
 
 def get_ticker_news(tickers, max_per_ticker=2):
+    finnhub_key = os.environ.get("FINNHUB_KEY", "")
     news_map = {}
     for t in tickers:
-        try:
-            items = yf.Ticker(t).news or []
-            entries = []
-            for item in items[:max_per_ticker]:
-                title = item.get("title","")
-                publisher = item.get("publisher","")
-                keywords = extract_keywords(title)
-                if title:
-                    entries.append((publisher, title[:90], keywords))
-            if entries:
-                news_map[t] = entries
-        except:
-            pass
+        entries = []
+        # --- Source 1 : Finnhub (si clé disponible) ---
+        if finnhub_key:
+            articles = _finnhub_news(t, finnhub_key)
+            for item in articles[:max_per_ticker]:
+                headline = item.get("headline", "")
+                source   = item.get("source", "Finnhub")
+                if headline:
+                    icon = sentiment_icon(headline)
+                    kw   = extract_keywords(headline)
+                    entries.append((f"{icon} {source}", headline[:95], kw))
+        # --- Source 2 : yfinance (fallback) ---
+        if not entries:
+            try:
+                items = yf.Ticker(t).news or []
+                for item in items[:max_per_ticker]:
+                    title     = item.get("title", "")
+                    publisher = item.get("publisher", "")
+                    if title:
+                        icon = sentiment_icon(title)
+                        kw   = extract_keywords(title)
+                        entries.append((f"{icon} {publisher}", title[:95], kw))
+            except:
+                pass
+        if entries:
+            news_map[t] = entries
     return news_map
 
 def get_all_indices(indices_dict):
