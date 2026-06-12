@@ -50,16 +50,33 @@ PEA_ETFS = {
     "ANX.PA":"Amundi Nasdaq-100 (PEA)","RS2K.PA":"Amundi Russell 2000 (PEA)",
 }
 NON_PEA = {
+    # USA
     "NVDA":"NVIDIA","AAPL":"Apple","MSFT":"Microsoft","AMZN":"Amazon",
-    "META":"Meta","GOOGL":"Alphabet","TSM":"TSMC (Taiwan)","AVGO":"Broadcom",
-    "005930.KS":"Samsung (Corée)","7203.T":"Toyota (Japon)","6758.T":"Sony (Japon)",
-    "9984.T":"SoftBank (Japon)","BRK-B":"Berkshire Hathaway","XOM":"ExxonMobil",
-    "JPM":"JPMorgan Chase",
+    "META":"Meta","GOOGL":"Alphabet","AVGO":"Broadcom",
+    "BRK-B":"Berkshire Hathaway","XOM":"ExxonMobil","JPM":"JPMorgan Chase",
+    # Japon
+    "7203.T":"Toyota","6758.T":"Sony","9984.T":"SoftBank",
+    "6861.T":"Keyence","6954.T":"Fanuc","4063.T":"Shin-Etsu Chemical",
+    "8306.T":"MUFG","9432.T":"NTT","6501.T":"Hitachi","6902.T":"Denso",
+    # Corée du Sud
+    "005930.KS":"Samsung Electronics","000660.KS":"SK Hynix",
+    "035420.KS":"NAVER","051910.KS":"LG Chem","006400.KS":"Samsung SDI",
+    "035720.KS":"Kakao","000270.KS":"Kia Motors",
+    # Taiwan
+    "TSM":"TSMC","2330.TW":"TSMC (TW)","2454.TW":"MediaTek",
+    "2317.TW":"Hon Hai (Foxconn)","3711.TW":"ASE Technology",
+    "2308.TW":"Delta Electronics",
+    # Chine (cotées Hong Kong)
+    "0700.HK":"Tencent","9988.HK":"Alibaba","3690.HK":"Meituan",
+    "1810.HK":"Xiaomi","1211.HK":"BYD","9618.HK":"JD.com",
+    "2318.HK":"Ping An","0939.HK":"China Construction Bank",
+    "0941.HK":"China Mobile","0388.HK":"Hong Kong Exchanges",
 }
 INDICES = {
     "^FCHI":"CAC 40","^STOXX50E":"Euro Stoxx 50","^GDAXI":"DAX 40",
     "^AEX":"AEX (Amsterdam)","^GSPC":"S&P 500","^IXIC":"NASDAQ",
-    "^N225":"Nikkei 225","^HSI":"Hang Seng",
+    "^N225":"Nikkei 225","^HSI":"Hang Seng","^KS11":"KOSPI (Corée)",
+    "^TWII":"TAIEX (Taiwan)","000001.SS":"Shanghai Composite",
 }
 
 # Lookup nom de société → ticker (pour extraction depuis articles RSS)
@@ -95,24 +112,41 @@ COMPANY_TO_TICKER = {
     "philips":"PHIA.AS","relx":"REN.AS","unilever":"UNA.AS","wolters":"WKL.AS",
     "novo nordisk":"NOVO-B.CO","novo":"NOVO-B.CO","inditex":"ITX.MC","zara":"ITX.MC",
     "santander":"SAN.MC","iberdrola":"IBE.MC","eni":"ENI.MI","ferrari":"RACE.MI",
-    # Hors PEA (utile pour détecter aussi)
+    # Hors PEA — USA
     "nvidia":"NVDA","apple":"AAPL","microsoft":"MSFT","amazon":"AMZN",
     "meta":"META","alphabet":"GOOGL","google":"GOOGL","tsmc":"TSM",
-    "broadcom":"AVGO","samsung":"005930.KS","toyota":"7203.T","sony":"6758.T",
-    "softbank":"9984.T","berkshire":"BRK-B","exxon":"XOM","jpmorgan":"JPM",
+    "broadcom":"AVGO","berkshire":"BRK-B","exxon":"XOM","jpmorgan":"JPM",
+    # Japon
+    "toyota":"7203.T","sony":"6758.T","softbank":"9984.T","keyence":"6861.T",
+    "fanuc":"6954.T","hitachi":"6501.T","denso":"6902.T","ntt":"9432.T",
+    "shin-etsu":"4063.T","mufg":"8306.T",
+    # Corée du Sud
+    "samsung":"005930.KS","sk hynix":"000660.KS","hynix":"000660.KS",
+    "naver":"035420.KS","lg chem":"051910.KS","samsung sdi":"006400.KS",
+    "kakao":"035720.KS","kia":"000270.KS",
+    # Taiwan
+    "tsmc":"2330.TW","mediatek":"2454.TW","foxconn":"2317.TW",
+    "hon hai":"2317.TW","delta electronics":"2308.TW",
+    # Chine
+    "tencent":"0700.HK","alibaba":"9988.HK","meituan":"3690.HK",
+    "xiaomi":"1810.HK","byd":"1211.HK","jd.com":"9618.HK","jd":"9618.HK",
+    "ping an":"2318.HK","china mobile":"0941.HK",
 }
 
 RSS_FEEDS = [
-    ("Les Echos",    "https://feeds.lesechos.fr/rss/rss_finance.xml"),
-    ("Reuters",      "https://feeds.reuters.com/reuters/businessNews"),
-    ("Boursorama",   "https://www.boursorama.com/actualites/rss/"),
-    ("Reuters FR",   "https://fr.reuters.com/rssFeed/businessNews"),
+    ("Les Echos",   "https://feeds.lesechos.fr/rss/rss_finance.xml"),
+    ("Boursorama",  "https://www.boursorama.com/actualites/rss/"),
+    ("Google News", "https://news.google.com/rss/search?q=bourse+actions+europe&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Google News", "https://news.google.com/rss/search?q=CAC40+DAX+actions&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Yahoo FR",    "https://fr.finance.yahoo.com/rss/headline?s=%5EFCHI"),
 ]
 
 def get_yahoo_trending():
-    """Tickers trending sur Yahoo Finance pour FR et DE."""
+    """Tickers trending sur Yahoo Finance — Europe uniquement pour le Radar PEA."""
     tickers = set()
-    for market in ["FR", "DE", "US"]:
+    # US uniquement pour les grandes caps connues (filtrées ensuite par prix)
+    US_LARGECAP = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","TSM","AVGO","JPM","XOM","BRK-B"}
+    for market in ["FR", "DE", "GB", "US", "JP", "KR", "TW", "HK"]:
         try:
             url = f"https://query1.finance.yahoo.com/v1/finance/trending/{market}"
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -121,11 +155,12 @@ def get_yahoo_trending():
             quotes = data["finance"]["result"][0]["quotes"]
             for q in quotes:
                 sym = q.get("symbol","")
-                # Garder seulement actions européennes éligibles PEA ou connues
-                if sym.endswith((".PA",".DE",".AS",".MC",".MI",".CO")):
+                if sym.endswith((".PA",".DE",".AS",".MC",".MI",".CO",".L",
+                                  ".T",".KS",".TW",".HK",".SS",".SZ")):
                     tickers.add(sym)
-                elif market == "US" and "." not in sym and len(sym) <= 5:
+                elif market == "US" and sym in US_LARGECAP:
                     tickers.add(sym)
+                # Exclure tout autre ticker US (penny stocks, meme stocks, etc.)
         except Exception as e:
             print(f"  [trending {market}] {e}")
     return tickers
@@ -354,7 +389,7 @@ def main():
     now = datetime.now(timezone.utc)
     print("="*W)
     print(f"  SCAN OPPORTUNITÉS MARCHÉ — {now.strftime('%A %d/%m/%Y — %H:%M UTC')}")
-    print(f"  Univers : CAC40 + DAX + EU + ETFs PEA + Hors-PEA ({sum(map(len,[CAC40,DAX,OTHER_EU,PEA_ETFS,NON_PEA]))} valeurs)")
+    print(f"  Univers : CAC40 + DAX + EU + ETFs PEA + Hors-PEA/Asie ({sum(map(len,[CAC40,DAX,OTHER_EU,PEA_ETFS,NON_PEA]))} valeurs)")
     print("="*W)
 
     sec("CONTEXTE INDICES", "─")
