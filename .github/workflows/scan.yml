@@ -1,0 +1,32 @@
+name: Daily Market Scan
+
+on:
+  schedule:
+    - cron: '30 6 * * 1-5'   # 8h30 Paris (UTC+2 été) — lundi au vendredi
+  workflow_dispatch:           # permet de lancer manuellement depuis GitHub
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance pandas numpy feedparser -q
+
+      - name: Run market scan
+        run: python market_scan.py
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: savelsmanu@gmail.com
