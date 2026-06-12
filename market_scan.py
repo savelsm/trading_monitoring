@@ -187,6 +187,10 @@ def groq_synthesize(ticker_name, articles, groq_key):
         with urllib.request.urlopen(req, timeout=15) as r:
             result = json.loads(r.read())
         return result["choices"][0]["message"]["content"].strip()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")[:300]
+        print(f" [groq {e.code}: {body}]", end="", flush=True)
+        return None
     except Exception as e:
         print(f" [groq ERR: {e}]", end="", flush=True)
         return None
