@@ -22,7 +22,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance pandas numpy feedparser -q
+        run: pip install yfinance pandas numpy groq -q
 
       - name: Run market scan
         run: python market_scan.py
