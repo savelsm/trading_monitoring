@@ -8,11 +8,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import urllib.request
 import yfinance as yf
-try:
-    import feedparser
-    HAS_FEEDPARSER = True
-except ImportError:
-    HAS_FEEDPARSER = False
 
 CAC40 = {
     "AI.PA":"Air Liquide","AIR.PA":"Airbus","ALO.PA":"Alstom","ATO.PA":"Atos",
@@ -63,14 +58,12 @@ NON_PEA = {
     "035420.KS":"NAVER","051910.KS":"LG Chem","006400.KS":"Samsung SDI",
     "035720.KS":"Kakao","000270.KS":"Kia Motors",
     # Taiwan
-    "TSM":"TSMC","2330.TW":"TSMC (TW)","2454.TW":"MediaTek",
-    "2317.TW":"Hon Hai (Foxconn)","3711.TW":"ASE Technology",
+    "TSM":"TSMC","2454.TW":"MediaTek","2317.TW":"Hon Hai (Foxconn)",
     "2308.TW":"Delta Electronics",
     # Chine (cotées Hong Kong)
     "0700.HK":"Tencent","9988.HK":"Alibaba","3690.HK":"Meituan",
     "1810.HK":"Xiaomi","1211.HK":"BYD","9618.HK":"JD.com",
-    "2318.HK":"Ping An","0939.HK":"China Construction Bank",
-    "0941.HK":"China Mobile","0388.HK":"Hong Kong Exchanges",
+    "2318.HK":"Ping An","0941.HK":"China Mobile",
 }
 INDICES = {
     "^FCHI":"CAC 40","^STOXX50E":"Euro Stoxx 50","^GDAXI":"DAX 40",
@@ -79,196 +72,83 @@ INDICES = {
     "^TWII":"TAIEX (Taiwan)","000001.SS":"Shanghai Composite",
 }
 
-# Lookup nom de société → ticker (pour extraction depuis articles RSS)
-COMPANY_TO_TICKER = {
-    # CAC 40
-    "air liquide":"AI.PA","airbus":"AIR.PA","alstom":"ALO.PA","atos":"ATO.PA",
-    "danone":"BN.PA","bnp paribas":"BNP.PA","bnp":"BNP.PA","carrefour":"CA.PA",
-    "capgemini":"CAP.PA","axa":"CS.PA","vinci":"DG.PA","dassault":"DSY.PA",
-    "essilor":"EL.PA","luxottica":"EL.PA","essilorluxottica":"EL.PA",
-    "engie":"ENGI.PA","eurofins":"ERF.PA","société générale":"GLE.PA",
-    "societe generale":"GLE.PA","thales":"HO.PA","kering":"KER.PA",
-    "legrand":"LR.PA","lvmh":"MC.PA","moët":"MC.PA","louis vuitton":"MC.PA",
-    "michelin":"ML.PA","orange":"ORA.PA","publicis":"PUB.PA",
-    "pernod ricard":"RI.PA","pernod":"RI.PA","hermès":"RMS.PA","hermes":"RMS.PA",
-    "renault":"RNO.PA","safran":"SAF.PA","sanofi":"SAN.PA",
-    "saint-gobain":"SGO.PA","saint gobain":"SGO.PA","stellantis":"STLAP.PA",
-    "stmicroelectronics":"STM.PA","stm":"STM.PA","schneider":"SU.PA",
-    "totalenergies":"TTE.PA","total":"TTE.PA","unibail":"URW.PA",
-    "veolia":"VIE.PA","crédit agricole":"ACA.PA","credit agricole":"ACA.PA",
-    "bureau veritas":"BVI.PA","rémy cointreau":"RCO.PA","imerys":"NK.PA",
-    "sopra":"SOP.PA",
-    # DAX
-    "adidas":"ADS.DE","allianz":"ALV.DE","bayer":"BAYN.DE","bmw":"BMW.DE",
-    "basf":"BAS.DE","deutsche börse":"DB1.DE","deutsche boerse":"DB1.DE",
-    "deutsche bank":"DBK.DE","dhl":"DHL.DE","deutsche post":"DHL.DE",
-    "deutsche telekom":"DTE.DE","telekom":"DTE.DE","e.on":"EOAN.DE","eon":"EOAN.DE",
-    "fresenius":"FRE.DE","heidelberg":"HEI.DE","henkel":"HEN3.DE",
-    "infineon":"IFX.DE","linde":"LIN.DE","merck":"MRK.DE","munich re":"MUV2.DE",
-    "münchener rück":"MUV2.DE","rwe":"RWE.DE","sap":"SAP.DE","siemens":"SIE.DE",
-    "sartorius":"SRT3.DE","volkswagen":"VOW3.DE","vw":"VOW3.DE","zalando":"ZAL.DE",
-    # Autres EU
-    "asml":"ASML.AS","ing":"INGA.AS","arcelor":"MT.AS","arcelormittal":"MT.AS",
-    "philips":"PHIA.AS","relx":"REN.AS","unilever":"UNA.AS","wolters":"WKL.AS",
-    "novo nordisk":"NOVO-B.CO","novo":"NOVO-B.CO","inditex":"ITX.MC","zara":"ITX.MC",
-    "santander":"SAN.MC","iberdrola":"IBE.MC","eni":"ENI.MI","ferrari":"RACE.MI",
-    # Hors PEA — USA
-    "nvidia":"NVDA","apple":"AAPL","microsoft":"MSFT","amazon":"AMZN",
-    "meta":"META","alphabet":"GOOGL","google":"GOOGL","tsmc":"TSM",
-    "broadcom":"AVGO","berkshire":"BRK-B","exxon":"XOM","jpmorgan":"JPM",
-    # Japon
-    "toyota":"7203.T","sony":"6758.T","softbank":"9984.T","keyence":"6861.T",
-    "fanuc":"6954.T","hitachi":"6501.T","denso":"6902.T","ntt":"9432.T",
-    "shin-etsu":"4063.T","mufg":"8306.T",
-    # Corée du Sud
-    "samsung":"005930.KS","sk hynix":"000660.KS","hynix":"000660.KS",
-    "naver":"035420.KS","lg chem":"051910.KS","samsung sdi":"006400.KS",
-    "kakao":"035720.KS","kia":"000270.KS",
-    # Taiwan
-    "tsmc":"2330.TW","mediatek":"2454.TW","foxconn":"2317.TW",
-    "hon hai":"2317.TW","delta electronics":"2308.TW",
-    # Chine
-    "tencent":"0700.HK","alibaba":"9988.HK","meituan":"3690.HK",
-    "xiaomi":"1810.HK","byd":"1211.HK","jd.com":"9618.HK","jd":"9618.HK",
-    "ping an":"2318.HK","china mobile":"0941.HK",
-}
-
-RSS_FEEDS = [
-    ("Les Echos",   "https://feeds.lesechos.fr/rss/rss_finance.xml"),
-    ("Boursorama",  "https://www.boursorama.com/actualites/rss/"),
-    ("Google News", "https://news.google.com/rss/search?q=bourse+actions+europe&hl=fr&gl=FR&ceid=FR:fr"),
-    ("Google News", "https://news.google.com/rss/search?q=CAC40+DAX+actions&hl=fr&gl=FR&ceid=FR:fr"),
-    ("Yahoo FR",    "https://fr.finance.yahoo.com/rss/headline?s=%5EFCHI"),
-]
-
-def get_yahoo_trending():
-    """Tickers trending sur Yahoo Finance — Europe uniquement pour le Radar PEA."""
-    tickers = set()
-    # US uniquement pour les grandes caps connues (filtrées ensuite par prix)
-    US_LARGECAP = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","TSM","AVGO","JPM","XOM","BRK-B"}
-    for market in ["FR", "DE", "GB", "US", "JP", "KR", "TW", "HK"]:
-        try:
-            url = f"https://query1.finance.yahoo.com/v1/finance/trending/{market}"
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                data = json.loads(r.read())
-            quotes = data["finance"]["result"][0]["quotes"]
-            for q in quotes:
-                sym = q.get("symbol","")
-                if sym.endswith((".PA",".DE",".AS",".MC",".MI",".CO",".L",
-                                  ".T",".KS",".TW",".HK",".SS",".SZ")):
-                    tickers.add(sym)
-                elif market == "US" and sym in US_LARGECAP:
-                    tickers.add(sym)
-                # Exclure tout autre ticker US (penny stocks, meme stocks, etc.)
-        except Exception as e:
-            print(f"  [trending {market}] {e}")
-    return tickers
-
 STOP_WORDS = {
     "le","la","les","de","du","des","un","une","en","et","à","au","aux","par","sur",
     "pour","avec","dans","que","qui","se","sa","son","ses","ce","cet","cette","ces",
     "il","elle","ils","elles","on","je","tu","nous","vous","plus","the","of","in",
     "a","an","to","for","on","at","by","is","are","was","its","be","as","has","have",
-    "it","this","that","with","from","will","after","but","or","new","new","said",
-    "says","may","can","also","than","into","been","about","over","up","out","their",
+    "it","this","that","with","from","will","after","but","or","new","said","says",
+    "may","can","also","than","into","been","about","over","up","out","their",
 }
 
 def extract_keywords(text, n=5):
-    """Extrait les n mots-clés les plus significatifs d'un texte."""
     words = re.findall(r'\b[a-zA-ZÀ-ÿ]{4,}\b', text)
     filtered = [w for w in words if w.lower() not in STOP_WORDS]
-    # Compte la fréquence et retourne les plus fréquents
     freq = {}
     for w in filtered:
         freq[w.lower()] = freq.get(w.lower(), 0) + 1
     top = sorted(freq, key=freq.get, reverse=True)[:n]
     return top
 
-def scan_rss_for_tickers():
-    """Parse les flux RSS et extrait les tickers + mots-clés des articles mentionnés."""
-    if not HAS_FEEDPARSER:
-        return {}
-    found = {}  # ticker → [(source, titre, mots_clés)]
-    text_lower_map = {k.lower(): v for k, v in COMPANY_TO_TICKER.items()}
-    for source, url in RSS_FEEDS:
+def get_ticker_news(tickers, max_per_ticker=2):
+    news_map = {}
+    for t in tickers:
         try:
-            feed = feedparser.parse(url)
-            for entry in feed.entries[:30]:
-                title = entry.get("title", "")
-                summary = entry.get("summary", "")
-                full_text = title + " " + summary
-                text_lower = full_text.lower()
-                for name, ticker in text_lower_map.items():
-                    if name in text_lower:
-                        keywords = extract_keywords(full_text)
-                        if ticker not in found:
-                            found[ticker] = []
-                        found[ticker].append((source, title[:90], keywords))
-        except Exception as e:
-            print(f"  [rss {source}] {e}")
-    return found
-
-def radar_scan(static_universe: set, rss_hits: dict = None):
-    """
-    Combine Yahoo trending + RSS, analyse les tickers non encore dans l'univers statique.
-    Retourne dict ticker → {name, signals, sources, articles}
-    """
-    print("\n  [Radar] Trending Yahoo Finance...", end=" ", flush=True)
-    trending = get_yahoo_trending()
-    print(f"{len(trending)} tickers")
-
-    if rss_hits is None:
-        print("  [Radar] Scan RSS...", end=" ", flush=True)
-        rss_hits = scan_rss_for_tickers()
-        print(f"{len(rss_hits)} tickers mentionnés")
-    else:
-        print(f"  [Radar] RSS déjà scanné — {len(rss_hits)} tickers")
-
-    # Union des deux sources, hors univers statique
-    candidates = (trending | set(rss_hits.keys())) - static_universe
-    candidates = {t for t in candidates if not t.startswith("^")}
-
-    if not candidates:
-        print("  [Radar] Aucun nouveau ticker à analyser.")
-        return {}
-
-    print(f"  [Radar] Analyse de {len(candidates)} nouveaux tickers...", end=" ", flush=True)
-    results = {}
-    try:
-        raw = yf.download(list(candidates), period="14mo", auto_adjust=True,
-                          group_by="ticker", threads=True, progress=False)
-    except Exception as e:
-        print(f"ERR:{e}")
-        return {}
-
-    ok = 0
-    for t in candidates:
-        try:
-            df = raw if len(candidates)==1 else (raw[t] if t in raw.columns.get_level_values(0) else None)
-            if df is None or df.empty or len(df) < 60:
-                continue
-            s = analyze(t, df)
-            if s:
-                is_trending = t in trending
-                results[t] = {
-                    "name": COMPANY_TO_TICKER.get(t.split(".")[0].lower(), t),
-                    "trending": is_trending,
-                    "articles": [],  # rempli après ci-dessous
-                    **s
-                }
-                ok += 1
+            items = yf.Ticker(t).news or []
+            entries = []
+            for item in items[:max_per_ticker]:
+                title = item.get("title","")
+                publisher = item.get("publisher","")
+                keywords = extract_keywords(title)
+                if title:
+                    entries.append((publisher, title[:90], keywords))
+            if entries:
+                news_map[t] = entries
         except:
             pass
-    print(f"{ok} analysés")
-    # Récupère les news yfinance pour les nouvelles valeurs trouvées
-    if results:
-        print(f"  [Radar] News pour {len(results)} valeurs...", end=" ", flush=True)
-        radar_news = get_ticker_news(list(results.keys()))
-        for t in results:
-            results[t]["articles"] = radar_news.get(t, [])
-        print(f"{len(radar_news)} avec actualités")
+    return news_map
+
+def get_all_indices(indices_dict):
+    results = {}
+    tickers = list(indices_dict.keys())
+    try:
+        raw = yf.download(tickers, period="5d", auto_adjust=True,
+                          group_by="ticker", threads=True, progress=False)
+        for t in tickers:
+            try:
+                df = raw if len(tickers)==1 else (raw[t] if t in raw.columns.get_level_values(0) else None)
+                if df is not None and not df.empty:
+                    close = df["Close"].dropna()
+                    if len(close) >= 2:
+                        results[t] = (float(close.iloc[-1]),
+                                      float((close.iloc[-1]/close.iloc[-2]-1)*100))
+            except:
+                pass
+    except Exception as e:
+        print(f"  [indices] ERR: {e}")
     return results
+
+def get_yahoo_trending():
+    tickers = set()
+    EU_SUFFIXES = (".PA",".DE",".AS",".MC",".MI",".CO",".L",".BR",".LS",".SW")
+    ASIA_SUFFIXES = (".T",".KS",".TW",".HK",".SS",".SZ")
+    US_LARGECAP = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","TSM","AVGO","JPM","XOM","BRK-B"}
+    for market in ["FR","DE","GB","JP","KR","TW","HK"]:
+        try:
+            url = f"https://query1.finance.yahoo.com/v1/finance/trending/{market}"
+            req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            quotes = data["finance"]["result"][0]["quotes"]
+            for q in quotes:
+                sym = q.get("symbol","")
+                if any(sym.endswith(s) for s in EU_SUFFIXES+ASIA_SUFFIXES):
+                    tickers.add(sym)
+                elif "." not in sym and sym in US_LARGECAP:
+                    tickers.add(sym)
+        except Exception as e:
+            print(f"  [trending {market}] {e}")
+    return tickers
 
 def rsi(close, period=14):
     delta = close.diff()
@@ -362,44 +242,195 @@ def dl(tickers, period="14mo", label=""):
     print(f"{len(result)}/{len(tickers)} OK")
     return result
 
-def get_all_indices(indices_dict):
-    """Télécharge tous les indices en un seul batch et retourne {ticker: (price, change%)}."""
+def radar_scan(static_universe):
+    print("\n  [Radar] Trending Yahoo Finance...", end=" ", flush=True)
+    trending = get_yahoo_trending()
+    print(f"{len(trending)} tickers")
+    candidates = trending - static_universe
+    candidates = {t for t in candidates if not t.startswith("^")}
+    if not candidates:
+        print("  [Radar] Aucun nouveau ticker.")
+        return {}
+    print(f"  [Radar] Analyse de {len(candidates)} nouveaux tickers...", end=" ", flush=True)
     results = {}
-    tickers = list(indices_dict.keys())
     try:
-        raw = yf.download(tickers, period="5d", auto_adjust=True,
+        raw = yf.download(list(candidates), period="14mo", auto_adjust=True,
                           group_by="ticker", threads=True, progress=False)
-        for t in tickers:
-            try:
-                df = raw if len(tickers)==1 else (raw[t] if t in raw.columns.get_level_values(0) else None)
-                if df is not None and not df.empty and len(df) >= 2:
-                    close = df["Close"].dropna()
-                    if len(close) >= 2:
-                        results[t] = (float(close.iloc[-1]),
-                                      float((close.iloc[-1]/close.iloc[-2]-1)*100))
-            except: pass
     except Exception as e:
-        print(f"  [indices] ERR: {e}")
+        print(f"ERR:{e}"); return {}
+    ok = 0
+    for t in candidates:
+        try:
+            df = raw if len(candidates)==1 else (raw[t] if t in raw.columns.get_level_values(0) else None)
+            if df is None or df.empty or len(df) < 60: continue
+            s = analyze(t, df)
+            if s:
+                results[t] = {"name":t, "trending":True, "articles":[], **s}
+                ok += 1
+        except: pass
+    print(f"{ok} analysés")
+    if results:
+        print(f"  [Radar] News...", end=" ", flush=True)
+        radar_news = get_ticker_news(list(results.keys()))
+        for t in results:
+            results[t]["articles"] = radar_news.get(t, [])
+        print(f"{len(radar_news)} avec actualités")
     return results
 
-def get_ticker_news(tickers, max_per_ticker=2):
-    """Récupère les actualités récentes via yfinance pour une liste de tickers.
-    Retourne {ticker: [(publisher, title, keywords)]}"""
-    news_map = {}
-    for t in tickers:
-        try:
-            items = yf.Ticker(t).news or []
-            entries = []
-            for item in items[:max_per_ticker]:
-                title = item.get("title", "")
-                publisher = item.get("publisher", "")
-                keywords = extract_keywords(title)
-                if title:
-                    entries.append((publisher, title[:90], keywords))
-            if entries:
-                news_map[t] = entries
-        except: pass
-    return news_map
+def color_pct(v):
+    if v > 0: return f'<span style="color:#16a34a">▲{v:.1f}%</span>'
+    if v < 0: return f'<span style="color:#dc2626">▼{abs(v):.1f}%</span>'
+    return f'{v:.1f}%'
+
+def news_html(articles):
+    if not articles: return ""
+    html = ""
+    seen = set()
+    for item in articles[:2]:
+        src, title = item[0], item[1]
+        keywords = item[2] if len(item) > 2 else []
+        if title in seen: continue
+        seen.add(title)
+        kw_html = " ".join(
+            f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;padding:1px 5px;border-radius:3px;font-size:10px">{k}</span>'
+            for k in keywords[:5]
+        )
+        html += f'<div style="margin-top:4px;font-size:11px;color:#4b5563">📰 <em>[{src}]</em> {title}</div>'
+        if kw_html: html += f'<div style="margin-top:2px">{kw_html}</div>'
+    return html
+
+def html_row(name, ticker, s, score_label="", news_map=None):
+    indicators = [f'RSI {s["rsi"]:.0f}']
+    if s["bull_cross"]: indicators.append("MACD↑")
+    elif s["macd"] > s["signal"]: indicators.append("MACD+")
+    else: indicators.append("MACD-")
+    if s["above_sma200"] is True: indicators.append("▲SMA200")
+    if s["vol_ratio"] and s["vol_ratio"] >= 1.5: indicators.append(f'Vol×{s["vol_ratio"]:.1f}')
+    if s["squeeze"]: indicators.append("BB squeeze")
+    ind_html = " · ".join(indicators)
+    score_html = f' <span style="color:#6b7280;font-size:12px">{score_label}</span>' if score_label else ""
+    articles = (news_map or {}).get(ticker, [])
+    return f"""
+    <tr>
+      <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
+        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker})</span>{score_html}<br>
+        <span style="font-size:12px;color:#555">{ind_html}</span>
+        {news_html(articles)}
+      </td>
+      <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
+        {color_pct(s["change_1d"])}/j<br>
+        <span style="font-size:12px">{color_pct(s["change_1mo"])}/mois</span>
+      </td>
+    </tr>"""
+
+def radar_rows(radar):
+    rows = ""
+    for t, s in sorted(radar.items(), key=lambda x: x[1]["oversold_score"]+x[1]["trend_score"], reverse=True):
+        tags = '<span style="background:#7c3aed;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px">📡 Trending</span>'
+        rows += f"""
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
+            <strong>{t}</strong> {tags}<br>
+            <span style="font-size:12px;color:#555">RSI {s['rsi']:.0f} · {'MACD↑' if s['bull_cross'] else ('MACD+' if s['macd']>s['signal'] else 'MACD-')} · {'▲SMA200' if s['above_sma200'] else ''}</span>
+            {news_html(s.get('articles',[]))}
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
+            {color_pct(s['change_1d'])}/j<br>
+            <span style="font-size:12px">{color_pct(s['change_1mo'])}/mois</span>
+          </td>
+        </tr>"""
+    return rows
+
+def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
+    content = rows_html if rows_html else f'<tr><td colspan="2" style="padding:8px 12px;color:#6b7280">{empty_msg}</td></tr>'
+    return f"""
+    <div style="margin-bottom:24px">
+      <div style="background:{color};color:#fff;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:bold">{title}</div>
+      <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 6px 6px">
+        {content}
+      </table>
+    </div>"""
+
+def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map):
+    idx_rows = ""
+    for name, val in indices_data:
+        if val:
+            p, c = val
+            col = "#16a34a" if c >= 0 else "#dc2626"
+            arrow = "▲" if c >= 0 else "▼"
+            idx_rows += f'<td style="padding:6px 14px;text-align:center"><div style="font-size:12px;color:#6b7280">{name}</div><div style="font-weight:bold">{p:,.2f}</div><div style="color:{col};font-size:12px">{arrow}{abs(c):.2f}%</div></td>'
+        else:
+            idx_rows += f'<td style="padding:6px 14px;text-align:center"><div style="font-size:12px;color:#6b7280">{name}</div><div style="color:#9ca3af">n/d</div></td>'
+
+    nm = news_map or {}
+    ca_rows = "".join(html_row(s["name"],t,s,f'[Score {s["oversold_score"]}/8]',nm) for t,s in ca.items())
+    cb_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in cb.items())
+    cc_rows = "".join(html_row(s["name"],t,s,f'[Trend {s["trend_score"]}/6]',nm) for t,s in cc.items())
+    cd_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in cd.items())
+    ha_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in sorted(ha.items(),key=lambda x:x[1]["oversold_score"],reverse=True))
+    hc_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in sorted(hc.items(),key=lambda x:x[1]["trend_score"],reverse=True))
+
+    sq_html = ""
+    if sq:
+        sq_items = "".join(f'<tr><td style="padding:6px 12px;border-bottom:1px solid #f0f0f0"><strong>{s["name"]}</strong> ({t}) · RSI {s["rsi"]:.0f} · {color_pct(s["change_1d"])}/j</td></tr>' for t,s in list(sq.items())[:8])
+        sq_html = section_html("⚡ Compressions Bollinger — rupture imminente", "#7c3aed", sq_items)
+
+    radar_html = ""
+    if radar:
+        r_rows = radar_rows(radar)
+        radar_html = section_html("🛰️ Radar — Nouvelles valeurs détectées (trending)", "#0f766e", r_rows)
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;background:#f9fafb;padding:20px">
+  <div style="background:#1e3a5f;color:#fff;padding:18px 24px;border-radius:8px;margin-bottom:20px">
+    <div style="font-size:20px;font-weight:bold">📈 Scan Marché PEA</div>
+    <div style="font-size:13px;opacity:0.8;margin-top:4px">{now.strftime("%A %d/%m/%Y — %H:%M UTC")} · {len(sig)} valeurs PEA · {len(snp)} hors-PEA/Asie</div>
+  </div>
+
+  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:20px;overflow-x:auto">
+    <div style="font-weight:bold;margin-bottom:8px;color:#374151">Indices</div>
+    <table style="border-collapse:collapse;width:100%"><tr>{idx_rows}</tr></table>
+  </div>
+
+  {radar_html}
+  {section_html("🟢 A — Signaux d'achat forts (PEA)", "#16a34a", ca_rows, "Aucun signal fort aujourd'hui.")}
+  {section_html("🟡 B — À surveiller", "#d97706", cb_rows, "Aucune valeur en zone de surveillance.")}
+  {section_html("🔵 C — Tendance haussière confirmée", "#2563eb", cc_rows, "Aucune tendance forte.")}
+  {section_html("🔴 D — Surachat — prudence", "#dc2626", cd_rows, "Aucune valeur en surachat.")}
+  {sq_html}
+
+  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:20px">
+    <div style="font-weight:bold;margin-bottom:10px;color:#374151">Hors PEA — CTO (USA + Asie)</div>
+    {'<div style="margin-bottom:6px;font-size:13px;color:#6b7280">▶ Signaux achat / rebond</div><table style="width:100%;border-collapse:collapse">' + ha_rows + '</table>' if ha_rows else ''}
+    {'<div style="margin:10px 0 6px;font-size:13px;color:#6b7280">▶ Tendances haussières</div><table style="width:100%;border-collapse:collapse">' + hc_rows + '</table>' if hc_rows else ''}
+    {'<div style="color:#6b7280;font-size:13px">Aucun signal notable hors-PEA.</div>' if not ha_rows and not hc_rows else ''}
+  </div>
+
+  <div style="text-align:center;font-size:11px;color:#9ca3af;margin-top:16px">
+    Généré automatiquement — données Yahoo Finance · Usage personnel uniquement
+  </div>
+</body></html>"""
+
+def send_email(html_body, now):
+    gmail_user = os.environ.get("GMAIL_USER","")
+    gmail_pwd  = os.environ.get("GMAIL_APP_PASSWORD","")
+    recipient  = os.environ.get("RECIPIENT_EMAIL", gmail_user)
+    if not gmail_user or not gmail_pwd:
+        print("  [email] GMAIL_USER ou GMAIL_APP_PASSWORD non défini — email ignoré.")
+        return
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"📈 Scan PEA — {now.strftime('%d/%m/%Y')}"
+    msg["From"]    = gmail_user
+    msg["To"]      = recipient
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
+            srv.login(gmail_user, gmail_pwd)
+            srv.sendmail(gmail_user, recipient, msg.as_string())
+        print(f"  [email] Envoyé à {recipient} ✓")
+    except Exception as e:
+        print(f"  [email] Erreur : {e}")
 
 def fmts(s):
     parts = [f"RSI {s['rsi']:.0f}"]
@@ -446,7 +477,7 @@ def main():
     ddax  = dl(list(DAX.keys()),      label="DAX")
     deu   = dl(list(OTHER_EU.keys()), label="Autres EU")
     detf  = dl(list(PEA_ETFS.keys()), label="ETFs PEA")
-    dnpea = dl(list(NON_PEA.keys()),  label="Hors-PEA")
+    dnpea = dl(list(NON_PEA.keys()),  label="Hors-PEA/Asie")
     all_data = {**dpea,**ddax,**deu,**detf}
 
     sig, snp = {}, {}
@@ -505,200 +536,21 @@ def main():
     sec("RÉSUMÉ","=")
     print(f"  Valeurs analysées (PEA) : {len(sig)}")
     print(f"  A (achat fort) : {len(ca)}  |  B (surveiller) : {len(cb)}  |  C (tendance) : {len(cc)}  |  D (surachat) : {len(cd)}")
-    print(f"  Compressions BB : {len(sq)}  |  Hors-PEA : {len(snp)}")
+    print(f"  Compressions BB : {len(sq)}  |  Hors-PEA/Asie : {len(snp)}")
     print("="*W)
 
-    # Actualités yfinance pour les valeurs signalées (sections B, C, hors-PEA)
+    # News yfinance pour les valeurs signalées
     signal_tickers = list(set(list(ca)+list(cb)+list(cc)+list(ha)+list(hc)))
-    print(f"\n  [News] Récupération actualités pour {len(signal_tickers)} valeurs...", end=" ", flush=True)
-    news_hits = get_ticker_news(signal_tickers)
-    print(f"{len(news_hits)} avec actualités")
+    print(f"\n  [News] Récupération pour {len(signal_tickers)} valeurs...", end=" ", flush=True)
+    news_map = get_ticker_news(signal_tickers)
+    print(f"{len(news_map)} avec actualités")
 
-    # Radar — nouvelles valeurs trending
+    # Radar trending
     static_universe = set({**CAC40,**DAX,**OTHER_EU,**PEA_ETFS,**NON_PEA}.keys())
-    radar = radar_scan(static_universe, news_hits)
-    if radar:
-        sec("🛰️ RADAR — Nouvelles valeurs détectées","─")
-        for t, s in sorted(radar.items(), key=lambda x: x[1]["oversold_score"]+x[1]["trend_score"], reverse=True):
-            tags = []
-            if s["trending"]: tags.append("[Trending]")
-            if s["articles"]: tags.append(f"[{', '.join(set(a[0] for a in s['articles'][:2]))}]")
-            print(f"  {t:<16} RSI {s['rsi']:.0f}  {fmtp(s)}  {' '.join(tags)}")
-            for src, title in s["articles"][:1]:
-                print(f"    → {src}: {title}")
+    radar = radar_scan(static_universe)
 
-    # Envoi email HTML
-    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_hits)
+    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map)
     send_email(html, now)
-
-def color_pct(v):
-    if v > 0: return f'<span style="color:#16a34a">▲{v:.1f}%</span>'
-    if v < 0: return f'<span style="color:#dc2626">▼{abs(v):.1f}%</span>'
-    return f'{v:.1f}%'
-
-def badge(label, color):
-    return f'<span style="background:{color};color:#fff;padding:2px 7px;border-radius:4px;font-size:12px;margin-right:4px">{label}</span>'
-
-def html_row(name, ticker, s, score_label="", rss_hits=None):
-    indicators = []
-    indicators.append(f'RSI {s["rsi"]:.0f}')
-    if s["bull_cross"]: indicators.append("MACD↑")
-    elif s["macd"] > s["signal"]: indicators.append("MACD+")
-    else: indicators.append("MACD-")
-    if s["above_sma200"] is True: indicators.append("▲SMA200")
-    if s["vol_ratio"] and s["vol_ratio"] >= 1.5: indicators.append(f'Vol×{s["vol_ratio"]:.1f}')
-    if s["squeeze"]: indicators.append("BB squeeze")
-    ind_html = " · ".join(indicators)
-    score_html = f' <span style="color:#6b7280;font-size:12px">{score_label}</span>' if score_label else ""
-    context = rss_context_html(rss_hits.get(ticker, [])) if rss_hits else ""
-    return f"""
-    <tr>
-      <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker})</span>{score_html}<br>
-        <span style="font-size:12px;color:#555">{ind_html}</span>
-        {context}
-      </td>
-      <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
-        {color_pct(s["change_1d"])}/j<br>
-        <span style="font-size:12px">{color_pct(s["change_1mo"])}/mois</span>
-      </td>
-    </tr>"""
-
-def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
-    content = rows_html if rows_html else f'<tr><td colspan="2" style="padding:8px 12px;color:#6b7280">{empty_msg}</td></tr>'
-    return f"""
-    <div style="margin-bottom:24px">
-      <div style="background:{color};color:#fff;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:bold">{title}</div>
-      <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 6px 6px">
-        {content}
-      </table>
-    </div>"""
-
-def rss_context_html(articles):
-    """Génère le bloc HTML contexte RSS (titres + mots-clés) pour un ticker."""
-    if not articles:
-        return ""
-    html = ""
-    seen = set()
-    for item in articles[:2]:
-        src, title = item[0], item[1]
-        keywords = item[2] if len(item) > 2 else []
-        if title in seen:
-            continue
-        seen.add(title)
-        kw_html = ""
-        if keywords:
-            kw_html = " ".join(
-                f'<span style="background:#f0f9ff;color:#0369a1;border:1px solid #bae6fd;padding:1px 5px;border-radius:3px;font-size:10px">{k}</span>'
-                for k in keywords[:5]
-            )
-        html += f'<div style="margin-top:4px;font-size:11px;color:#4b5563">📰 <em>[{src}]</em> {title}</div>'
-        if kw_html:
-            html += f'<div style="margin-top:2px">{kw_html}</div>'
-    return html
-
-def radar_html_rows(radar):
-    rows = ""
-    for t, s in sorted(radar.items(), key=lambda x: x[1]["oversold_score"]+x[1]["trend_score"], reverse=True):
-        tags = []
-        if s["trending"]: tags.append('<span style="background:#7c3aed;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px">📡 Trending</span>')
-        if s["articles"]:
-            srcs = ", ".join(set(a[0] for a in s["articles"][:3]))
-            tags.append(f'<span style="background:#0891b2;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px">📰 {srcs}</span>')
-        tag_html = " ".join(tags)
-        rows += f"""
-        <tr>
-          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-            <strong>{t}</strong> {tag_html}<br>
-            <span style="font-size:12px;color:#555">RSI {s['rsi']:.0f} · {'MACD↑' if s['bull_cross'] else ('MACD+' if s['macd']>s['signal'] else 'MACD-')} · {'▲SMA200' if s['above_sma200'] else ''}</span>
-            {rss_context_html(s.get('articles',[]))}
-          </td>
-          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
-            {color_pct(s['change_1d'])}/j<br>
-            <span style="font-size:12px">{color_pct(s['change_1mo'])}/mois</span>
-          </td>
-        </tr>"""
-    return rows
-
-def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar=None, rss_hits=None):
-    idx_rows = ""
-    for name, val in indices_data:
-        if val:
-            p, c = val
-            arrow = "▲" if c >= 0 else "▼"
-            col = "#16a34a" if c >= 0 else "#dc2626"
-            idx_rows += f'<td style="padding:6px 14px;text-align:center"><div style="font-size:12px;color:#6b7280">{name}</div><div style="font-weight:bold">{p:,.2f}</div><div style="color:{col};font-size:12px">{arrow}{abs(c):.2f}%</div></td>'
-
-    rh = rss_hits or {}
-    ca_rows = "".join(html_row(s["name"],t,s,f'[Score {s["oversold_score"]}/8]',rh) for t,s in ca.items())
-    cb_rows = "".join(html_row(s["name"],t,s,"",rh) for t,s in cb.items())
-    cc_rows = "".join(html_row(s["name"],t,s,f'[Trend {s["trend_score"]}/6]',rh) for t,s in cc.items())
-    cd_rows = "".join(html_row(s["name"],t,s,"",rh) for t,s in cd.items())
-    ha_rows = "".join(html_row(s["name"],t,s,"",rh) for t,s in sorted(ha.items(),key=lambda x:x[1]["oversold_score"],reverse=True))
-    hc_rows = "".join(html_row(s["name"],t,s,"",rh) for t,s in sorted(hc.items(),key=lambda x:x[1]["trend_score"],reverse=True))
-
-    sq_html = ""
-    if sq:
-        sq_items = "".join(f'<tr><td style="padding:6px 12px;border-bottom:1px solid #f0f0f0"><strong>{s["name"]}</strong> ({t}) · RSI {s["rsi"]:.0f} · {color_pct(s["change_1d"])}/j</td></tr>' for t,s in list(sq.items())[:8])
-        sq_html = section_html("⚡ Compressions Bollinger — rupture imminente", "#7c3aed", sq_items)
-
-    radar_html = ""
-    if radar:
-        r_rows = radar_html_rows(radar)
-        radar_html = section_html("🛰️ Radar — Nouvelles valeurs détectées (trending / presse)", "#0f766e", r_rows,
-                                  "Aucune nouvelle valeur détectée aujourd'hui.")
-
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
-<body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;background:#f9fafb;padding:20px">
-  <div style="background:#1e3a5f;color:#fff;padding:18px 24px;border-radius:8px;margin-bottom:20px">
-    <div style="font-size:20px;font-weight:bold">📈 Scan Marché PEA</div>
-    <div style="font-size:13px;opacity:0.8;margin-top:4px">{now.strftime("%A %d/%m/%Y — %H:%M UTC")} · {len(sig)} valeurs PEA · {len(snp)} hors-PEA</div>
-  </div>
-
-  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:20px;overflow-x:auto">
-    <div style="font-weight:bold;margin-bottom:8px;color:#374151">Indices</div>
-    <table style="border-collapse:collapse;width:100%"><tr>{idx_rows}</tr></table>
-  </div>
-
-  {radar_html}
-  {section_html("🟢 A — Signaux d'achat forts (PEA)", "#16a34a", ca_rows, "Aucun signal fort aujourd'hui.")}
-  {section_html("🟡 B — À surveiller", "#d97706", cb_rows, "Aucune valeur en zone de surveillance.")}
-  {section_html("🔵 C — Tendance haussière confirmée", "#2563eb", cc_rows, "Aucune tendance forte.")}
-  {section_html("🔴 D — Surachat — prudence", "#dc2626", cd_rows, "Aucune valeur en surachat.")}
-  {sq_html}
-
-  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:20px">
-    <div style="font-weight:bold;margin-bottom:10px;color:#374151">Hors PEA (CTO uniquement)</div>
-    {'<div style="margin-bottom:6px;font-size:13px;color:#6b7280">▶ Signaux achat / rebond</div><table style="width:100%;border-collapse:collapse">' + ha_rows + '</table>' if ha_rows else ''}
-    {'<div style="margin:10px 0 6px;font-size:13px;color:#6b7280">▶ Tendances haussières</div><table style="width:100%;border-collapse:collapse">' + hc_rows + '</table>' if hc_rows else ''}
-    {'<div style="color:#6b7280;font-size:13px">Aucun signal notable hors-PEA.</div>' if not ha_rows and not hc_rows else ''}
-  </div>
-
-  <div style="text-align:center;font-size:11px;color:#9ca3af;margin-top:16px">
-    Généré automatiquement — données Yahoo Finance · Usage personnel uniquement
-  </div>
-</body></html>"""
-
-def send_email(html_body, now):
-    gmail_user = os.environ.get("GMAIL_USER", "")
-    gmail_pwd  = os.environ.get("GMAIL_APP_PASSWORD", "")
-    recipient  = os.environ.get("RECIPIENT_EMAIL", gmail_user)
-    if not gmail_user or not gmail_pwd:
-        print("  [email] GMAIL_USER ou GMAIL_APP_PASSWORD non défini — email ignoré.")
-        return
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"📈 Scan PEA — {now.strftime('%d/%m/%Y')}"
-    msg["From"]    = gmail_user
-    msg["To"]      = recipient
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
-            srv.login(gmail_user, gmail_pwd)
-            srv.sendmail(gmail_user, recipient, msg.as_string())
-        print(f"  [email] Envoyé à {recipient} ✓")
-    except Exception as e:
-        print(f"  [email] Erreur : {e}")
 
 if __name__ == "__main__":
     main()
