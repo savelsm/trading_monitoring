@@ -154,26 +154,70 @@ def _parse_yf_news_item(item):
         publisher = item.get("publisher", "")
     return title.strip(), publisher.strip()
 
-def get_ticker_news(tickers, max_per_ticker=2):
+def groq_synthesize(ticker_name, articles, groq_key):
+    """Appelle Groq (Llama 3.1 70B) pour synthétiser les articles d'un ticker en 2 phrases."""
+    texts = []
+    for item in articles[:3]:
+        headline = item.get("headline", "")
+        summary  = item.get("summary", "")
+        if headline:
+            texts.append(f"- {headline}" + (f" : {summary[:200]}" if summary else ""))
+    if not texts:
+        return None
+    prompt = (
+        f"Tu es analyste financier. Voici des articles récents sur {ticker_name} :\n\n"
+        + "\n".join(texts)
+        + "\n\nEn 2 phrases maximum, explique la tendance actuelle et pourquoi ce titre "
+        "est potentiellement intéressant. Sois factuel et concis. Réponds en français."
+    )
+    payload = {
+        "model": "llama-3.1-70b-versatile",
+        "max_tokens": 120,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    try:
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {groq_key}",
+                "content-type": "application/json",
+            }
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            result = json.loads(r.read())
+        return result["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f" [groq ERR: {e}]", end="", flush=True)
+        return None
+
+def get_ticker_news(tickers, max_per_ticker=3):
     finnhub_key = os.environ.get("FINNHUB_KEY", "")
-    if finnhub_key:
-        print(f"    [news] Finnhub actif", end=" ", flush=True)
-    else:
-        print(f"    [news] Finnhub absent → yfinance", end=" ", flush=True)
+    groq_key    = os.environ.get("GROQ_KEY", "")
+    sources = []
+    if finnhub_key: sources.append("Finnhub")
+    if groq_key:    sources.append("Groq synthèse")
+    if not finnhub_key: sources.append("yfinance")
+    print(f"    [news] Sources : {', '.join(sources)}", end=" ", flush=True)
+
     news_map = {}
     for t in tickers:
-        entries = []
+        entries      = []
+        raw_finnhub  = []
+
         # --- Source 1 : Finnhub ---
         if finnhub_key:
-            articles = _finnhub_news(t, finnhub_key)
-            for item in articles[:max_per_ticker]:
+            raw_finnhub = _finnhub_news(t, finnhub_key)
+            for item in raw_finnhub[:max_per_ticker]:
                 headline = item.get("headline", "")
                 source   = item.get("source", "Finnhub")
+                summary  = item.get("summary", "")
                 if headline:
                     icon = sentiment_icon(headline)
-                    kw   = extract_keywords(headline)
+                    kw   = extract_keywords(headline + " " + summary)
                     entries.append((f"{icon} {source}", headline[:95], kw))
-        # --- Source 2 : yfinance (fallback) ---
+
+        # --- Source 2 : yfinance (fallback si Finnhub vide) ---
         if not entries:
             try:
                 raw_items = yf.Ticker(t).news or []
@@ -185,8 +229,18 @@ def get_ticker_news(tickers, max_per_ticker=2):
                         entries.append((f"{icon} {publisher}", title[:95], kw))
             except Exception as e:
                 print(f"\n    [news] yf ERR {t}: {e}", end=" ", flush=True)
-        if entries:
-            news_map[t] = entries
+
+        # --- Source 3 : Synthèse Groq (si articles disponibles) ---
+        synthesis = None
+        if groq_key and (raw_finnhub or entries):
+            src = raw_finnhub if raw_finnhub else [
+                {"headline": e[1], "summary": ""} for e in entries
+            ]
+            synthesis = groq_synthesize(t, src, groq_key)
+
+        if entries or synthesis:
+            news_map[t] = {"articles": entries, "synthesis": synthesis}
+
     return news_map
 
 def get_all_indices(indices_dict):
@@ -354,7 +408,9 @@ def radar_scan(static_universe):
         print(f"  [Radar] News...", end=" ", flush=True)
         radar_news = get_ticker_news(list(results.keys()))
         for t in results:
-            results[t]["articles"] = radar_news.get(t, [])
+            entry = radar_news.get(t, {})
+            results[t]["articles"]  = entry.get("articles", []) if isinstance(entry, dict) else entry
+            results[t]["synthesis"] = entry.get("synthesis") if isinstance(entry, dict) else None
         print(f"{len(radar_news)} avec actualités")
     return results
 
@@ -363,9 +419,22 @@ def color_pct(v):
     if v < 0: return f'<span style="color:#dc2626">▼{abs(v):.1f}%</span>'
     return f'{v:.1f}%'
 
-def news_html(articles):
-    if not articles: return ""
+def news_html(news_entry):
+    """news_entry : dict {"articles": [...], "synthesis": str|None} ou None."""
+    if not news_entry: return ""
     html = ""
+    synthesis = news_entry.get("synthesis") if isinstance(news_entry, dict) else None
+    articles  = news_entry.get("articles", []) if isinstance(news_entry, dict) else news_entry
+
+    # Synthèse Claude en premier
+    if synthesis:
+        html += (
+            f'<div style="margin-top:6px;padding:6px 8px;background:#f0fdf4;border-left:3px solid #16a34a;'
+            f'border-radius:3px;font-size:11px;color:#166534">'
+            f'🤖 <strong>Synthèse :</strong> {synthesis}</div>'
+        )
+
+    # Articles sources
     seen = set()
     for item in articles[:2]:
         src, title = item[0], item[1]
@@ -373,8 +442,9 @@ def news_html(articles):
         if title in seen: continue
         seen.add(title)
         kw_html = " ".join(
-            f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;padding:1px 5px;border-radius:3px;font-size:10px">{k}</span>'
-            for k in keywords[:5]
+            f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
+            f'padding:1px 5px;border-radius:3px;font-size:10px">{k}</span>'
+            for k in keywords[:4]
         )
         html += f'<div style="margin-top:4px;font-size:11px;color:#4b5563">📰 <em>[{src}]</em> {title}</div>'
         if kw_html: html += f'<div style="margin-top:2px">{kw_html}</div>'
