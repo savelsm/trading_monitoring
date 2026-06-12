@@ -130,28 +130,51 @@ def get_yahoo_trending():
             print(f"  [trending {market}] {e}")
     return tickers
 
+STOP_WORDS = {
+    "le","la","les","de","du","des","un","une","en","et","à","au","aux","par","sur",
+    "pour","avec","dans","que","qui","se","sa","son","ses","ce","cet","cette","ces",
+    "il","elle","ils","elles","on","je","tu","nous","vous","plus","the","of","in",
+    "a","an","to","for","on","at","by","is","are","was","its","be","as","has","have",
+    "it","this","that","with","from","will","after","but","or","new","new","said",
+    "says","may","can","also","than","into","been","about","over","up","out","their",
+}
+
+def extract_keywords(text, n=5):
+    """Extrait les n mots-clés les plus significatifs d'un texte."""
+    words = re.findall(r'\b[a-zA-ZÀ-ÿ]{4,}\b', text)
+    filtered = [w for w in words if w.lower() not in STOP_WORDS]
+    # Compte la fréquence et retourne les plus fréquents
+    freq = {}
+    for w in filtered:
+        freq[w.lower()] = freq.get(w.lower(), 0) + 1
+    top = sorted(freq, key=freq.get, reverse=True)[:n]
+    return top
+
 def scan_rss_for_tickers():
-    """Parse les flux RSS et extrait les tickers mentionnés dans les titres/résumés."""
+    """Parse les flux RSS et extrait les tickers + mots-clés des articles mentionnés."""
     if not HAS_FEEDPARSER:
         return {}
-    found = {}  # ticker → [(source, titre)]
+    found = {}  # ticker → [(source, titre, mots_clés)]
     text_lower_map = {k.lower(): v for k, v in COMPANY_TO_TICKER.items()}
     for source, url in RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:30]:
-                text = (entry.get("title","") + " " + entry.get("summary","")).lower()
+                title = entry.get("title", "")
+                summary = entry.get("summary", "")
+                full_text = title + " " + summary
+                text_lower = full_text.lower()
                 for name, ticker in text_lower_map.items():
-                    if name in text:
-                        title = entry.get("title","")[:80]
+                    if name in text_lower:
+                        keywords = extract_keywords(full_text)
                         if ticker not in found:
                             found[ticker] = []
-                        found[ticker].append((source, title))
+                        found[ticker].append((source, title[:90], keywords))
         except Exception as e:
             print(f"  [rss {source}] {e}")
     return found
 
-def radar_scan(static_universe: set):
+def radar_scan(static_universe: set, rss_hits: dict = None):
     """
     Combine Yahoo trending + RSS, analyse les tickers non encore dans l'univers statique.
     Retourne dict ticker → {name, signals, sources, articles}
@@ -160,9 +183,12 @@ def radar_scan(static_universe: set):
     trending = get_yahoo_trending()
     print(f"{len(trending)} tickers")
 
-    print("  [Radar] Scan RSS...", end=" ", flush=True)
-    rss_hits = scan_rss_for_tickers()
-    print(f"{len(rss_hits)} tickers mentionnés")
+    if rss_hits is None:
+        print("  [Radar] Scan RSS...", end=" ", flush=True)
+        rss_hits = scan_rss_for_tickers()
+        print(f"{len(rss_hits)} tickers mentionnés")
+    else:
+        print(f"  [Radar] RSS déjà scanné — {len(rss_hits)} tickers")
 
     # Union des deux sources, hors univers statique
     candidates = (trending | set(rss_hits.keys())) - static_universe
@@ -409,7 +435,8 @@ def main():
 
     # Radar — nouvelles valeurs trending / presse
     static_universe = set({**CAC40,**DAX,**OTHER_EU,**PEA_ETFS,**NON_PEA}.keys())
-    radar = radar_scan(static_universe)
+    rss_hits = scan_rss_for_tickers()
+    radar = radar_scan(static_universe, rss_hits)
     if radar:
         sec("🛰️ RADAR — Nouvelles valeurs détectées","─")
         for t, s in sorted(radar.items(), key=lambda x: x[1]["oversold_score"]+x[1]["trend_score"], reverse=True):
@@ -421,7 +448,7 @@ def main():
                 print(f"    → {src}: {title}")
 
     # Envoi email HTML
-    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar)
+    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, rss_hits)
     send_email(html, now)
 
 def color_pct(v):
@@ -432,7 +459,7 @@ def color_pct(v):
 def badge(label, color):
     return f'<span style="background:{color};color:#fff;padding:2px 7px;border-radius:4px;font-size:12px;margin-right:4px">{label}</span>'
 
-def html_row(name, ticker, s, score_label=""):
+def html_row(name, ticker, s, score_label="", rss_hits=None):
     indicators = []
     indicators.append(f'RSI {s["rsi"]:.0f}')
     if s["bull_cross"]: indicators.append("MACD↑")
@@ -443,11 +470,13 @@ def html_row(name, ticker, s, score_label=""):
     if s["squeeze"]: indicators.append("BB squeeze")
     ind_html = " · ".join(indicators)
     score_html = f' <span style="color:#6b7280;font-size:12px">{score_label}</span>' if score_label else ""
+    context = rss_context_html(rss_hits.get(ticker, [])) if rss_hits else ""
     return f"""
     <tr>
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
         <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker})</span>{score_html}<br>
         <span style="font-size:12px;color:#555">{ind_html}</span>
+        {context}
       </td>
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
         {color_pct(s["change_1d"])}/j<br>
@@ -465,6 +494,29 @@ def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
       </table>
     </div>"""
 
+def rss_context_html(articles):
+    """Génère le bloc HTML contexte RSS (titres + mots-clés) pour un ticker."""
+    if not articles:
+        return ""
+    html = ""
+    seen = set()
+    for item in articles[:2]:
+        src, title = item[0], item[1]
+        keywords = item[2] if len(item) > 2 else []
+        if title in seen:
+            continue
+        seen.add(title)
+        kw_html = ""
+        if keywords:
+            kw_html = " ".join(
+                f'<span style="background:#f0f9ff;color:#0369a1;border:1px solid #bae6fd;padding:1px 5px;border-radius:3px;font-size:10px">{k}</span>'
+                for k in keywords[:5]
+            )
+        html += f'<div style="margin-top:4px;font-size:11px;color:#4b5563">📰 <em>[{src}]</em> {title}</div>'
+        if kw_html:
+            html += f'<div style="margin-top:2px">{kw_html}</div>'
+    return html
+
 def radar_html_rows(radar):
     rows = ""
     for t, s in sorted(radar.items(), key=lambda x: x[1]["oversold_score"]+x[1]["trend_score"], reverse=True):
@@ -474,16 +526,12 @@ def radar_html_rows(radar):
             srcs = ", ".join(set(a[0] for a in s["articles"][:3]))
             tags.append(f'<span style="background:#0891b2;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px">📰 {srcs}</span>')
         tag_html = " ".join(tags)
-        articles_html = ""
-        if s["articles"]:
-            for src, title in s["articles"][:2]:
-                articles_html += f'<div style="font-size:11px;color:#6b7280;margin-top:2px">· [{src}] {title}</div>'
         rows += f"""
         <tr>
           <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
             <strong>{t}</strong> {tag_html}<br>
             <span style="font-size:12px;color:#555">RSI {s['rsi']:.0f} · {'MACD↑' if s['bull_cross'] else ('MACD+' if s['macd']>s['signal'] else 'MACD-')} · {'▲SMA200' if s['above_sma200'] else ''}</span>
-            {articles_html}
+            {rss_context_html(s.get('articles',[]))}
           </td>
           <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
             {color_pct(s['change_1d'])}/j<br>
@@ -492,7 +540,7 @@ def radar_html_rows(radar):
         </tr>"""
     return rows
 
-def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar=None):
+def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar=None, rss_hits=None):
     idx_rows = ""
     for name, val in indices_data:
         if val:
@@ -501,12 +549,13 @@ def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar=No
             col = "#16a34a" if c >= 0 else "#dc2626"
             idx_rows += f'<td style="padding:6px 14px;text-align:center"><div style="font-size:12px;color:#6b7280">{name}</div><div style="font-weight:bold">{p:,.2f}</div><div style="color:{col};font-size:12px">{arrow}{abs(c):.2f}%</div></td>'
 
-    ca_rows = "".join(html_row(s["name"],t,s,f'[Score {s["oversold_score"]}/8]') for t,s in ca.items())
-    cb_rows = "".join(html_row(s["name"],t,s) for t,s in cb.items())
-    cc_rows = "".join(html_row(s["name"],t,s,f'[Trend {s["trend_score"]}/6]') for t,s in cc.items())
-    cd_rows = "".join(html_row(s["name"],t,s) for t,s in cd.items())
-    ha_rows = "".join(html_row(s["name"],t,s) for t,s in sorted(ha.items(),key=lambda x:x[1]["oversold_score"],reverse=True))
-    hc_rows = "".join(html_row(s["name"],t,s) for t,s in sorted(hc.items(),key=lambda x:x[1]["trend_score"],reverse=True))
+    rh = rss_hits or {}
+    ca_rows = "".join(html_row(s["name"],t,s,f'[Score {s["oversold_score"]}/8]',rh) for t,s in ca.items())
+    cb_rows = "".join(html_row(s["name"],t,s,"",rh) for t,s in cb.items())
+    cc_rows = "".join(html_row(s["name"],t,s,f'[Trend {s["trend_score"]}/6]',rh) for t,s in cc.items())
+    cd_rows = "".join(html_row(s["name"],t,s,"",rh) for t,s in cd.items())
+    ha_rows = "".join(html_row(s["name"],t,s,"",rh) for t,s in sorted(ha.items(),key=lambda x:x[1]["oversold_score"],reverse=True))
+    hc_rows = "".join(html_row(s["name"],t,s,"",rh) for t,s in sorted(hc.items(),key=lambda x:x[1]["trend_score"],reverse=True))
 
     sq_html = ""
     if sq:
