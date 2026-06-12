@@ -118,30 +118,52 @@ def extract_keywords(text, n=5):
         freq[w_lower] = freq.get(w_lower, 0) + score
     return sorted(freq, key=freq.get, reverse=True)[:n]
 
-def _finnhub_news(ticker, finnhub_key, days=3):
-    """Récupère les actualités Finnhub pour un ticker (format Yahoo ex: BNP.PA → BNP)."""
+def _finnhub_news(ticker, finnhub_key, days=5):
+    """Récupère les actualités Finnhub. Essaie le symbole complet puis sans suffixe."""
     from datetime import timedelta
-    now = datetime.now(timezone.utc)
-    date_from = (now - timedelta(days=days)).strftime("%Y-%m-%d")
-    date_to = now.strftime("%Y-%m-%d")
-    # Finnhub utilise le symbole sans suffixe bourse pour les actions EU
-    sym = ticker.split(".")[0] if "." in ticker else ticker
-    url = (f"https://finnhub.io/api/v1/company-news?symbol={sym}"
-           f"&from={date_from}&to={date_to}&token={finnhub_key}")
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            data = json.loads(r.read())
-        return data if isinstance(data, list) else []
-    except:
-        return []
+    now_dt = datetime.now(timezone.utc)
+    date_from = (now_dt - timedelta(days=days)).strftime("%Y-%m-%d")
+    date_to   = now_dt.strftime("%Y-%m-%d")
+    candidates = [ticker]
+    if "." in ticker:
+        candidates.append(ticker.split(".")[0])
+    for sym in candidates:
+        try:
+            url = (f"https://finnhub.io/api/v1/company-news?symbol={sym}"
+                   f"&from={date_from}&to={date_to}&token={finnhub_key}")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read())
+            if isinstance(data, list) and len(data) > 0:
+                return data
+        except:
+            pass
+    return []
+
+def _parse_yf_news_item(item):
+    """Parse un article yfinance — compatible ancien et nouveau format."""
+    # Nouveau format yfinance >= 0.2.37 : imbriqué sous "content"
+    content = item.get("content", {})
+    if content:
+        title     = content.get("title", "")
+        provider  = content.get("provider", {})
+        publisher = provider.get("displayName", "") if isinstance(provider, dict) else ""
+    else:
+        # Ancien format plat
+        title     = item.get("title", "")
+        publisher = item.get("publisher", "")
+    return title.strip(), publisher.strip()
 
 def get_ticker_news(tickers, max_per_ticker=2):
     finnhub_key = os.environ.get("FINNHUB_KEY", "")
+    if finnhub_key:
+        print(f"    [news] Finnhub actif", end=" ", flush=True)
+    else:
+        print(f"    [news] Finnhub absent → yfinance", end=" ", flush=True)
     news_map = {}
     for t in tickers:
         entries = []
-        # --- Source 1 : Finnhub (si clé disponible) ---
+        # --- Source 1 : Finnhub ---
         if finnhub_key:
             articles = _finnhub_news(t, finnhub_key)
             for item in articles[:max_per_ticker]:
@@ -154,16 +176,15 @@ def get_ticker_news(tickers, max_per_ticker=2):
         # --- Source 2 : yfinance (fallback) ---
         if not entries:
             try:
-                items = yf.Ticker(t).news or []
-                for item in items[:max_per_ticker]:
-                    title     = item.get("title", "")
-                    publisher = item.get("publisher", "")
+                raw_items = yf.Ticker(t).news or []
+                for item in raw_items[:max_per_ticker]:
+                    title, publisher = _parse_yf_news_item(item)
                     if title:
                         icon = sentiment_icon(title)
                         kw   = extract_keywords(title)
                         entries.append((f"{icon} {publisher}", title[:95], kw))
-            except:
-                pass
+            except Exception as e:
+                print(f"\n    [news] yf ERR {t}: {e}", end=" ", flush=True)
         if entries:
             news_map[t] = entries
     return news_map
