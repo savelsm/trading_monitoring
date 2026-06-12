@@ -211,7 +211,8 @@ def get_ticker_news(tickers, max_per_ticker=3):
                 if headline:
                     icon = sentiment_icon(headline)
                     kw   = extract_keywords(headline + " " + summary)
-                    entries.append((f"{icon} {source}", headline[:95], kw))
+                    url  = item.get("url", "")
+                    entries.append((f"{icon} {source}", headline[:95], kw, url))
 
         # --- Source 2 : yfinance (fallback si Finnhub vide) ---
         if not entries:
@@ -436,8 +437,10 @@ def news_html(news_entry):
     # Articles sources
     seen = set()
     for item in articles[:2]:
-        src, title = item[0], item[1]
+        src      = item[0]
+        title    = item[1]
         keywords = item[2] if len(item) > 2 else []
+        url      = item[3] if len(item) > 3 else ""
         if title in seen: continue
         seen.add(title)
         kw_html = " ".join(
@@ -445,7 +448,11 @@ def news_html(news_entry):
             f'padding:1px 5px;border-radius:3px;font-size:10px">{k}</span>'
             for k in keywords[:4]
         )
-        html += f'<div style="margin-top:4px;font-size:11px;color:#4b5563">📰 <em>[{src}]</em> {title}</div>'
+        title_html = (
+            f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{title}</a>'
+            if url else title
+        )
+        html += f'<div style="margin-top:4px;font-size:11px;color:#4b5563">📰 <em>[{src}]</em> {title_html}</div>'
         if kw_html: html += f'<div style="margin-top:2px">{kw_html}</div>'
     return html
 
