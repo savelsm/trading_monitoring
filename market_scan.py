@@ -250,19 +250,24 @@ def radar_scan(static_universe: set, rss_hits: dict = None):
                 continue
             s = analyze(t, df)
             if s:
-                # Sources ayant mentionné ce ticker
-                sources_list = rss_hits.get(t, [])
                 is_trending = t in trending
                 results[t] = {
                     "name": COMPANY_TO_TICKER.get(t.split(".")[0].lower(), t),
                     "trending": is_trending,
-                    "articles": sources_list,
+                    "articles": [],  # rempli après ci-dessous
                     **s
                 }
                 ok += 1
         except:
             pass
     print(f"{ok} analysés")
+    # Récupère les news yfinance pour les nouvelles valeurs trouvées
+    if results:
+        print(f"  [Radar] News pour {len(results)} valeurs...", end=" ", flush=True)
+        radar_news = get_ticker_news(list(results.keys()))
+        for t in results:
+            results[t]["articles"] = radar_news.get(t, [])
+        print(f"{len(radar_news)} avec actualités")
     return results
 
 def rsi(close, period=14):
@@ -357,13 +362,44 @@ def dl(tickers, period="14mo", label=""):
     print(f"{len(result)}/{len(tickers)} OK")
     return result
 
-def get_idx(ticker):
+def get_all_indices(indices_dict):
+    """Télécharge tous les indices en un seul batch et retourne {ticker: (price, change%)}."""
+    results = {}
+    tickers = list(indices_dict.keys())
     try:
-        df = yf.download(ticker, period="5d", auto_adjust=True, progress=False)
-        if df is not None and not df.empty:
-            return float(df["Close"].iloc[-1]), float((df["Close"].iloc[-1]/df["Close"].iloc[-2]-1)*100)
-    except: pass
-    return None, None
+        raw = yf.download(tickers, period="5d", auto_adjust=True,
+                          group_by="ticker", threads=True, progress=False)
+        for t in tickers:
+            try:
+                df = raw if len(tickers)==1 else (raw[t] if t in raw.columns.get_level_values(0) else None)
+                if df is not None and not df.empty and len(df) >= 2:
+                    close = df["Close"].dropna()
+                    if len(close) >= 2:
+                        results[t] = (float(close.iloc[-1]),
+                                      float((close.iloc[-1]/close.iloc[-2]-1)*100))
+            except: pass
+    except Exception as e:
+        print(f"  [indices] ERR: {e}")
+    return results
+
+def get_ticker_news(tickers, max_per_ticker=2):
+    """Récupère les actualités récentes via yfinance pour une liste de tickers.
+    Retourne {ticker: [(publisher, title, keywords)]}"""
+    news_map = {}
+    for t in tickers:
+        try:
+            items = yf.Ticker(t).news or []
+            entries = []
+            for item in items[:max_per_ticker]:
+                title = item.get("title", "")
+                publisher = item.get("publisher", "")
+                keywords = extract_keywords(title)
+                if title:
+                    entries.append((publisher, title[:90], keywords))
+            if entries:
+                news_map[t] = entries
+        except: pass
+    return news_map
 
 def fmts(s):
     parts = [f"RSI {s['rsi']:.0f}"]
@@ -393,12 +429,16 @@ def main():
     print("="*W)
 
     sec("CONTEXTE INDICES", "─")
+    idx_values = get_all_indices(INDICES)
     indices_data = []
     for t, n in INDICES.items():
-        p, c = get_idx(t)
-        indices_data.append((n, (p, c) if p else None))
-        if p: print(f"  {n:<28} {p:>10,.2f}   {'▲' if c>=0 else '▼'}{abs(c):.2f}%")
-        else: print(f"  {n:<28} {'n/d':>10}")
+        val = idx_values.get(t)
+        indices_data.append((n, val))
+        if val:
+            p, c = val
+            print(f"  {n:<30} {p:>12,.2f}   {'▲' if c>=0 else '▼'}{abs(c):.2f}%")
+        else:
+            print(f"  {n:<30} {'n/d':>12}")
 
     print()
     all_pea = {**CAC40,**DAX,**OTHER_EU,**PEA_ETFS}
@@ -468,10 +508,15 @@ def main():
     print(f"  Compressions BB : {len(sq)}  |  Hors-PEA : {len(snp)}")
     print("="*W)
 
-    # Radar — nouvelles valeurs trending / presse
+    # Actualités yfinance pour les valeurs signalées (sections B, C, hors-PEA)
+    signal_tickers = list(set(list(ca)+list(cb)+list(cc)+list(ha)+list(hc)))
+    print(f"\n  [News] Récupération actualités pour {len(signal_tickers)} valeurs...", end=" ", flush=True)
+    news_hits = get_ticker_news(signal_tickers)
+    print(f"{len(news_hits)} avec actualités")
+
+    # Radar — nouvelles valeurs trending
     static_universe = set({**CAC40,**DAX,**OTHER_EU,**PEA_ETFS,**NON_PEA}.keys())
-    rss_hits = scan_rss_for_tickers()
-    radar = radar_scan(static_universe, rss_hits)
+    radar = radar_scan(static_universe, news_hits)
     if radar:
         sec("🛰️ RADAR — Nouvelles valeurs détectées","─")
         for t, s in sorted(radar.items(), key=lambda x: x[1]["oversold_score"]+x[1]["trend_score"], reverse=True):
@@ -483,7 +528,7 @@ def main():
                 print(f"    → {src}: {title}")
 
     # Envoi email HTML
-    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, rss_hits)
+    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_hits)
     send_email(html, now)
 
 def color_pct(v):
