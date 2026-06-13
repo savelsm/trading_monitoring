@@ -536,7 +536,7 @@ def scouting_html(buys, sells):
             <div>
               <span style="font-size:18px;font-weight:bold;color:{col_bdr}">{arrow}{abs(pct1d):.1f}%</span>
               &nbsp;<strong style="font-size:13px">{name}</strong>
-              &nbsp;<span style="color:#6b7280;font-size:12px">({t})</span>
+              &nbsp;<span style="color:#6b7280;font-size:12px">({ticker_link(t)})</span>
             </div>
             <div style="margin-top:3px;font-size:11px">
               <span style="color:#6b7280">2j&nbsp;:&nbsp;{pct2d:+.1f}%</span>
@@ -572,6 +572,143 @@ def scouting_html(buys, sells):
         </div>
       </div>
     </div>"""
+
+def ticker_url(ticker):
+    """URL Yahoo Finance pour n'importe quel symbole boursier."""
+    return f"https://finance.yahoo.com/quote/{ticker}"
+
+def ticker_link(ticker, label=None):
+    """Lien cliquable vers Yahoo Finance."""
+    txt = label or ticker
+    return f'<a href="{ticker_url(ticker)}" style="color:#1d4ed8;text-decoration:none" target="_blank">{txt}</a>'
+
+def press_scan(finnhub_key, groq_key, known_tickers, top_n=5):
+    """Détecte les tickers les plus mentionnés dans la presse Finnhub (hors univers connu)."""
+    print(f"\n  [Presse] Analyse des mentions Finnhub...", end=" ", flush=True)
+    ticker_count = {}
+    ticker_arts  = {}
+    for category in ["general", "merger"]:
+        try:
+            url = (f"https://finnhub.io/api/v1/news?category={category}"
+                   f"&token={finnhub_key}&minId=0")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                articles = json.loads(r.read())
+            for art in articles[:80]:
+                related = art.get("related", "")
+                if not related:
+                    continue
+                for sym in related.split(","):
+                    sym = sym.strip().upper()
+                    # Accepte les formats US (1-5 lettres), et les tickers avec suffixe
+                    if not sym or len(sym) > 10:
+                        continue
+                    ticker_count[sym] = ticker_count.get(sym, 0) + 1
+                    ticker_arts.setdefault(sym, []).append(art)
+        except Exception as e:
+            print(f"ERR {category}: {e}", end=" ", flush=True)
+
+    # Filtre : hors univers connu + doit être un format raisonnable
+    candidates = {
+        t: c for t, c in ticker_count.items()
+        if t not in known_tickers and re.match(r'^[A-Z0-9]{1,6}(-[A-Z])?(\.[A-Z]{1,2})?$', t)
+    }
+    top = sorted(candidates.items(), key=lambda x: x[1], reverse=True)[:top_n * 3]
+    print(f"{len(candidates)} candidats → analyse top {min(top_n, len(top))}")
+
+    results = []
+    for sym, mentions in top:
+        if len(results) >= top_n:
+            break
+        try:
+            df_raw = yf.download(sym, period="14mo", auto_adjust=True,
+                                 progress=False, threads=False)
+            if df_raw is None or len(df_raw) < 60:
+                continue
+            s = analyze(sym, df_raw)
+            if not s:
+                continue
+            # Récupère les 2 premiers articles
+            arts_raw = ticker_arts.get(sym, [])[:3]
+            arts = []
+            for a in arts_raw:
+                h = a.get("headline", "")
+                if h:
+                    arts.append({
+                        "headline": h,
+                        "summary":  a.get("summary", ""),
+                        "source":   a.get("source", ""),
+                        "url":      a.get("url", ""),
+                    })
+            synthesis = None
+            if groq_key and arts:
+                synthesis = groq_synthesize(sym, arts, groq_key)
+            results.append({
+                "ticker":   sym,
+                "mentions": mentions,
+                "s":        s,
+                "articles": arts[:2],
+                "synthesis": synthesis,
+            })
+        except Exception:
+            continue
+    return results
+
+def press_html(press_data):
+    if not press_data:
+        return ""
+    rows = ""
+    for item in press_data:
+        t        = item["ticker"]
+        s        = item["s"]
+        mentions = item["mentions"]
+        arts     = item["articles"]
+        synth    = item["synthesis"]
+
+        ind = f'RSI {s["rsi"]:.0f} · {"MACD↑" if s["bull_cross"] else ("MACD+" if s["macd"]>s["signal"] else "MACD-")}'
+        if s.get("above_sma200"): ind += " · ▲SMA200"
+
+        arts_html = ""
+        for a in arts:
+            h   = a.get("headline","")[:90]
+            url = a.get("url","")
+            src = a.get("source","")
+            kw  = extract_keywords(h)
+            kw_html = " ".join(
+                f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
+                f'padding:1px 4px;border-radius:3px;font-size:10px">{k}</span>' for k in kw[:4]
+            )
+            lnk = f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{h}</a>' if url else h
+            arts_html += f'<div style="margin-top:3px;font-size:11px;color:#4b5563">📰 [{src}] {lnk}</div>'
+            if kw_html: arts_html += f'<div style="margin-top:2px">{kw_html}</div>'
+
+        synth_html = ""
+        if synth:
+            synth_html = (
+                f'<div style="margin-top:5px;padding:5px 8px;background:#f5f3ff;'
+                f'border-left:3px solid #7c3aed;border-radius:3px;font-size:11px;color:#5b21b6">'
+                f'🤖 <strong>Synthèse :</strong> {synth}</div>'
+            )
+
+        mention_tag = f'<span style="color:#7c3aed;font-size:11px;font-weight:bold">{mentions}× presse</span>'
+        rows += f"""
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
+            <strong>{ticker_link(t)}</strong>
+            &nbsp;{mention_tag}<br>
+            <span style="font-size:12px;color:#555">{ind}</span>
+            {arts_html}
+            {synth_html}
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
+            {color_pct(s["change_1d"])}/j<br>
+            <span style="font-size:12px">{color_pct(s["change_1mo"])}/mois</span>
+          </td>
+        </tr>"""
+    return section_html(
+        "📰 Presse — Valeurs en vedette (Finnhub General News)", "#b45309", rows,
+        "Aucune nouvelle valeur détectée dans la presse aujourd'hui."
+    )
 
 def color_pct(v):
     if v > 0: return f'<span style="color:#16a34a">▲{v:.1f}%</span>'
@@ -629,7 +766,7 @@ def html_row(name, ticker, s, score_label="", news_map=None):
     return f"""
     <tr>
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker})</span>{score_html}<br>
+        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker_link(ticker)})</span>{score_html}<br>
         <span style="font-size:12px;color:#555">{ind_html}</span>
         {news_html(articles)}
       </td>
@@ -646,7 +783,7 @@ def radar_rows(radar):
         rows += f"""
         <tr>
           <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-            <strong>{t}</strong> {tags}<br>
+            <strong>{ticker_link(t)}</strong> {tags}<br>
             <span style="font-size:12px;color:#555">RSI {s['rsi']:.0f} · {'MACD↑' if s['bull_cross'] else ('MACD+' if s['macd']>s['signal'] else 'MACD-')} · {'▲SMA200' if s['above_sma200'] else ''}</span>
             {news_html(s.get('articles',[]))}
           </td>
@@ -667,7 +804,7 @@ def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
       </table>
     </div>"""
 
-def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map, scouting=None):
+def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map, scouting=None, press=None):
     idx_rows = ""
     for name, val in indices_data:
         if val:
@@ -688,7 +825,7 @@ def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, n
 
     sq_html = ""
     if sq:
-        sq_items = "".join(f'<tr><td style="padding:6px 12px;border-bottom:1px solid #f0f0f0"><strong>{s["name"]}</strong> ({t}) · RSI {s["rsi"]:.0f} · {color_pct(s["change_1d"])}/j</td></tr>' for t,s in list(sq.items())[:8])
+        sq_items = "".join(f'<tr><td style="padding:6px 12px;border-bottom:1px solid #f0f0f0"><strong>{s["name"]}</strong> ({ticker_link(t)}) · RSI {s["rsi"]:.0f} · {color_pct(s["change_1d"])}/j</td></tr>' for t,s in list(sq.items())[:8])
         sq_html = section_html("⚡ Compressions Bollinger — rupture imminente", "#7c3aed", sq_items)
 
     radar_html = ""
@@ -710,6 +847,7 @@ def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, n
   </div>
 
   {scouting_html(scouting[0], scouting[1]) if scouting else ""}
+  {press_html(press) if press else ""}
   {radar_html}
   {section_html("🟢 A — Signaux d'achat forts (PEA)", "#16a34a", ca_rows, "Aucun signal fort aujourd'hui.")}
   {section_html("🟡 B — À surveiller", "#d97706", cb_rows, "Aucune valeur en zone de surveillance.")}
@@ -871,11 +1009,17 @@ def main():
     groq_key    = os.environ.get("GROQ_KEY", "")
     scouting = build_scouting(sig, snp, finnhub_key, groq_key)
 
-    # Radar trending
+    # Presse — valeurs mentionnées dans Finnhub General News (hors univers connu)
     static_universe = set({**CAC40,**DAX,**OTHER_EU,**PEA_ETFS,**NON_PEA}.keys())
+    press = []
+    if finnhub_key:
+        press = press_scan(finnhub_key, groq_key, static_universe, top_n=5)
+        print(f"  [Presse] {len(press)} valeurs retenues")
+
+    # Radar trending
     radar = radar_scan(static_universe)
 
-    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map, scouting)
+    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map, scouting, press)
     send_email(html, now)
 
 if __name__ == "__main__":
