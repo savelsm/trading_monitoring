@@ -418,9 +418,9 @@ def build_scouting(sig, snp, finnhub_key, groq_key, top_n=3):
     """Identifie les top mouvements achat/vente du jour avec catalyseur news (effet mouton)."""
     all_stocks = {**sig, **snp}
     # Filtre : mouvement 1j suffisant
-    movers = {t: s for t, s in all_stocks.items() if abs(s.get("change_1d", 0)) >= 0.5}
-    top_buy  = sorted(movers.items(), key=lambda x: x[1]["change_1d"], reverse=True)[:top_n]
-    top_sell = sorted(movers.items(), key=lambda x: x[1]["change_1d"])[:top_n]
+    # Prend toujours les top_n movers même si le mouvement est < 0.5%
+    top_buy  = sorted(all_stocks.items(), key=lambda x: x[1].get("change_1d", 0), reverse=True)[:top_n]
+    top_sell = sorted(all_stocks.items(), key=lambda x: x[1].get("change_1d", 0))[:top_n]
 
     def enrich(entries):
         result = []
