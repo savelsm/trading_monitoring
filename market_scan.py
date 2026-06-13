@@ -498,11 +498,9 @@ def scouting_html(buys, sells):
         pct2d   = s.get("change_2d", pct1d)
         same_dir = (pct1d > 0) == (pct2d > 0)
         confirm_tag = (
-            f'<span style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0;'
-            f'padding:1px 6px;border-radius:3px;font-size:10px">✔ confirmé 2j</span> '
+            f'<span style="color:#16a34a;font-size:11px;font-weight:bold">✔&nbsp;2j</span>&nbsp;'
             if same_dir else
-            f'<span style="background:#fef9c3;color:#854d0e;border:1px solid #fde047;'
-            f'padding:1px 6px;border-radius:3px;font-size:10px">⚠ 1 seul jour</span> '
+            f'<span style="color:#d97706;font-size:11px;font-weight:bold">⚠&nbsp;1j</span>&nbsp;'
         )
         vol_tag = (f'<span style="background:#fef9c3;color:#854d0e;border:1px solid #fde047;'
                    f'padding:1px 6px;border-radius:3px;font-size:10px">Vol×{s["vol_ratio"]:.1f}</span> '
