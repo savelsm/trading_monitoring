@@ -533,12 +533,14 @@ def scouting_html(buys, sells):
         return f"""
         <tr>
           <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0">
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <div>
               <span style="font-size:18px;font-weight:bold;color:{col_bdr}">{arrow}{abs(pct1d):.1f}%</span>
-              <span style="font-size:12px;color:#6b7280">2j: {pct2d:+.1f}%</span>
-              <strong style="font-size:13px">{name}</strong>
-              <span style="color:#6b7280;font-size:12px">({t})</span>
-              {confirm_tag}{vol_tag}{rsi_tag}
+              &nbsp;<strong style="font-size:13px">{name}</strong>
+              &nbsp;<span style="color:#6b7280;font-size:12px">({t})</span>
+            </div>
+            <div style="margin-top:3px;font-size:11px">
+              <span style="color:#6b7280">2j&nbsp;:&nbsp;{pct2d:+.1f}%</span>
+              &nbsp;&nbsp;{confirm_tag}&nbsp;&nbsp;{vol_tag}&nbsp;{rsi_tag}
             </div>
             {arts_html}
             {synth_html}
