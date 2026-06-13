@@ -339,6 +339,7 @@ def analyze(ticker, df):
         a50 = cp>cs50 if cs50 else None
         a200 = cp>cs200 if cs200 else None
         c1d = float((close.iloc[-1]/close.iloc[-2]-1)*100) if len(close)>=2 else 0
+        c2d = float((close.iloc[-1]/close.iloc[-3]-1)*100) if len(close)>=3 else c1d
         c1m = float((close.iloc[-1]/close.iloc[-22]-1)*100) if len(close)>=22 else 0
         os = 0
         if cr<25: os+=3
@@ -358,7 +359,7 @@ def analyze(ticker, df):
                 "bull_cross":bc,"above_sma20":a20,"above_sma50":a50,"above_sma200":a200,
                 "vol_ratio":vr,"squeeze":squeeze,"pct_b":cpb,
                 "oversold_score":os,"trend_score":ts,"overbought":cr>72,
-                "price":cp,"change_1d":c1d,"change_1mo":c1m}
+                "price":cp,"change_1d":c1d,"change_2d":c2d,"change_1mo":c1m}
     except: return None
 
 def dl(tickers, period="14mo", label=""):
@@ -418,15 +419,31 @@ def build_scouting(sig, snp, finnhub_key, groq_key, top_n=3):
     """Identifie les top mouvements achat/vente du jour avec catalyseur news (effet mouton)."""
     all_stocks = {**sig, **snp}
     # Filtre : mouvement 1j suffisant
-    # Prend toujours les top_n movers même si le mouvement est < 0.5%
-    top_buy  = sorted(all_stocks.items(), key=lambda x: x[1].get("change_1d", 0), reverse=True)[:top_n]
-    top_sell = sorted(all_stocks.items(), key=lambda x: x[1].get("change_1d", 0))[:top_n]
+    # Score combiné J1 + J2 : confirme la tendance sur 2 jours consécutifs
+    def score_2d(s):
+        return s.get("change_1d", 0) + s.get("change_2d", 0)
+    top_buy  = sorted(all_stocks.items(), key=lambda x: score_2d(x[1]), reverse=True)[:top_n]
+    top_sell = sorted(all_stocks.items(), key=lambda x: score_2d(x[1]))[:top_n]
 
     def enrich(entries):
         result = []
         for t, s in entries:
-            # News Finnhub
-            articles = _finnhub_news(t, finnhub_key, days=2) if finnhub_key else []
+            # News Finnhub (primaire), yfinance (fallback)
+            articles = _finnhub_news(t, finnhub_key, days=3) if finnhub_key else []
+            if not articles:
+                try:
+                    raw_yf = yf.Ticker(t).news or []
+                    for item in raw_yf[:3]:
+                        title, publisher = _parse_yf_news_item(item)
+                        if title:
+                            content = item.get("content", {})
+                            url = ""
+                            if content:
+                                cp_link = content.get("canonicalUrl", {})
+                                url = cp_link.get("url", "") if isinstance(cp_link, dict) else ""
+                            articles.append({"headline": title, "summary": "", "source": publisher, "url": url})
+                except Exception:
+                    pass
             # Synthèse Groq
             synthesis = None
             if groq_key and articles:
@@ -437,9 +454,11 @@ def build_scouting(sig, snp, finnhub_key, groq_key, top_n=3):
                 if texts:
                     direction = "hausse" if s["change_1d"] > 0 else "baisse"
                     vol_txt = f" (volume ×{s['vol_ratio']:.1f} vs moyenne)" if s.get("vol_ratio") and s["vol_ratio"] > 1 else ""
+                    c2d = s.get("change_2d", s["change_1d"])
+                    trend_conf = "confirmée sur 2 jours" if (s["change_1d"] > 0) == (c2d > 0) else "non confirmée (J-1 allait dans le sens inverse)"
                     prompt = (
                         f"Tu es analyste financier spécialisé en comportements de marché. "
-                        f"{s['name']} ({t}) a progressé de {s['change_1d']:+.1f}% aujourd'hui{vol_txt}. "
+                        f"{s['name']} ({t}) : {s['change_1d']:+.1f}% aujourd'hui, {c2d:+.1f}% sur 2 jours ({trend_conf}){vol_txt}. "
                         f"RSI actuel : {s['rsi']:.0f}. Actualités récentes :\n" + "\n".join(texts) +
                         f"\n\nEn 2 phrases max, explique ce qui drive cette {direction} et si c'est "
                         f"un effet mouton (suivi de tendance/momentum) ou un mouvement fondamental. "
@@ -475,7 +494,16 @@ def scouting_html(buys, sells):
         col_bdr = "#16a34a" if side == "buy" else "#dc2626"
         col_txt = "#166534" if side == "buy" else "#991b1b"
         arrow   = "▲" if side == "buy" else "▼"
-        pct     = abs(s["change_1d"])
+        pct1d   = s["change_1d"]
+        pct2d   = s.get("change_2d", pct1d)
+        same_dir = (pct1d > 0) == (pct2d > 0)
+        confirm_tag = (
+            f'<span style="background:#dcfce7;color:#166534;border:1px solid #bbf7d0;'
+            f'padding:1px 6px;border-radius:3px;font-size:10px">✔ confirmé 2j</span> '
+            if same_dir else
+            f'<span style="background:#fef9c3;color:#854d0e;border:1px solid #fde047;'
+            f'padding:1px 6px;border-radius:3px;font-size:10px">⚠ 1 seul jour</span> '
+        )
         vol_tag = (f'<span style="background:#fef9c3;color:#854d0e;border:1px solid #fde047;'
                    f'padding:1px 6px;border-radius:3px;font-size:10px">Vol×{s["vol_ratio"]:.1f}</span> '
                    if s.get("vol_ratio") and s["vol_ratio"] >= 1.3 else "")
@@ -508,10 +536,11 @@ def scouting_html(buys, sells):
         <tr>
           <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <span style="font-size:18px;font-weight:bold;color:{col_bdr}">{arrow}{pct:.1f}%</span>
+              <span style="font-size:18px;font-weight:bold;color:{col_bdr}">{arrow}{abs(pct1d):.1f}%</span>
+              <span style="font-size:12px;color:#6b7280">2j: {pct2d:+.1f}%</span>
               <strong style="font-size:13px">{name}</strong>
               <span style="color:#6b7280;font-size:12px">({t})</span>
-              {vol_tag}{rsi_tag}
+              {confirm_tag}{vol_tag}{rsi_tag}
             </div>
             {arts_html}
             {synth_html}
