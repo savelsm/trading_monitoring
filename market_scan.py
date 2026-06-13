@@ -414,6 +414,136 @@ def radar_scan(static_universe):
         print(f"{len(radar_news)} avec actualités")
     return results
 
+def build_scouting(sig, snp, finnhub_key, groq_key, top_n=3):
+    """Identifie les top mouvements achat/vente du jour avec catalyseur news (effet mouton)."""
+    all_stocks = {**sig, **snp}
+    # Filtre : mouvement 1j suffisant
+    movers = {t: s for t, s in all_stocks.items() if abs(s.get("change_1d", 0)) >= 0.5}
+    top_buy  = sorted(movers.items(), key=lambda x: x[1]["change_1d"], reverse=True)[:top_n]
+    top_sell = sorted(movers.items(), key=lambda x: x[1]["change_1d"])[:top_n]
+
+    def enrich(entries):
+        result = []
+        for t, s in entries:
+            # News Finnhub
+            articles = _finnhub_news(t, finnhub_key, days=2) if finnhub_key else []
+            # Synthèse Groq
+            synthesis = None
+            if groq_key and articles:
+                texts = []
+                for a in articles[:3]:
+                    h = a.get("headline",""); su = a.get("summary","")
+                    if h: texts.append(f"- {h}" + (f" : {su[:150]}" if su else ""))
+                if texts:
+                    direction = "hausse" if s["change_1d"] > 0 else "baisse"
+                    vol_txt = f" (volume ×{s['vol_ratio']:.1f} vs moyenne)" if s.get("vol_ratio") and s["vol_ratio"] > 1 else ""
+                    prompt = (
+                        f"Tu es analyste financier spécialisé en comportements de marché. "
+                        f"{s['name']} ({t}) a progressé de {s['change_1d']:+.1f}% aujourd'hui{vol_txt}. "
+                        f"RSI actuel : {s['rsi']:.0f}. Actualités récentes :\n" + "\n".join(texts) +
+                        f"\n\nEn 2 phrases max, explique ce qui drive cette {direction} et si c'est "
+                        f"un effet mouton (suivi de tendance/momentum) ou un mouvement fondamental. "
+                        f"Sois factuel et précis. Réponds en français."
+                    )
+                    try:
+                        from groq import Groq
+                        client = Groq(api_key=groq_key)
+                        resp = client.chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            messages=[{"role":"user","content":prompt}],
+                            max_tokens=130,
+                        )
+                        synthesis = resp.choices[0].message.content.strip()
+                    except Exception as e:
+                        print(f" [scout groq ERR: {e}]", end="", flush=True)
+            result.append({"ticker": t, "name": s["name"], "s": s,
+                           "articles": articles[:2], "synthesis": synthesis})
+        return result
+
+    print(f"\n  [Scouting] Analyse top mouvements...", end=" ", flush=True)
+    buys  = enrich(top_buy)
+    sells = enrich(top_sell)
+    print("OK")
+    return buys, sells
+
+def scouting_html(buys, sells):
+    def card(item, side):
+        s = item["s"]
+        t = item["ticker"]
+        name = item["name"]
+        col_bg  = "#f0fdf4" if side == "buy" else "#fef2f2"
+        col_bdr = "#16a34a" if side == "buy" else "#dc2626"
+        col_txt = "#166534" if side == "buy" else "#991b1b"
+        arrow   = "▲" if side == "buy" else "▼"
+        pct     = abs(s["change_1d"])
+        vol_tag = (f'<span style="background:#fef9c3;color:#854d0e;border:1px solid #fde047;'
+                   f'padding:1px 6px;border-radius:3px;font-size:10px">Vol×{s["vol_ratio"]:.1f}</span> '
+                   if s.get("vol_ratio") and s["vol_ratio"] >= 1.3 else "")
+        rsi_tag = f'<span style="font-size:11px;color:#6b7280">RSI {s["rsi"]:.0f}</span>'
+
+        # Articles
+        arts_html = ""
+        for a in item["articles"][:2]:
+            h   = a.get("headline","")[:90]
+            url = a.get("url","")
+            src = a.get("source","")
+            kw  = extract_keywords(h)
+            kw_html = " ".join(
+                f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
+                f'padding:1px 4px;border-radius:3px;font-size:10px">{k}</span>' for k in kw[:4]
+            )
+            title_lnk = f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{h}</a>' if url else h
+            arts_html += f'<div style="margin-top:3px;font-size:11px;color:#4b5563">📰 [{src}] {title_lnk}</div>'
+            if kw_html: arts_html += f'<div style="margin-top:2px">{kw_html}</div>'
+
+        synth_html = ""
+        if item["synthesis"]:
+            synth_html = (
+                f'<div style="margin-top:6px;padding:5px 8px;background:{col_bg};'
+                f'border-left:3px solid {col_bdr};border-radius:3px;font-size:11px;color:{col_txt}">'
+                f'🤖 <strong>Analyse :</strong> {item["synthesis"]}</div>'
+            )
+
+        return f"""
+        <tr>
+          <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="font-size:18px;font-weight:bold;color:{col_bdr}">{arrow}{pct:.1f}%</span>
+              <strong style="font-size:13px">{name}</strong>
+              <span style="color:#6b7280;font-size:12px">({t})</span>
+              {vol_tag}{rsi_tag}
+            </div>
+            {arts_html}
+            {synth_html}
+          </td>
+        </tr>"""
+
+    buys_rows  = "".join(card(i, "buy")  for i in buys)
+    sells_rows = "".join(card(i, "sell") for i in sells)
+
+    return f"""
+    <div style="margin-bottom:24px;border:2px solid #1e3a5f;border-radius:8px;overflow:hidden">
+      <div style="background:#1e3a5f;color:#fff;padding:10px 16px">
+        <span style="font-size:15px;font-weight:bold">🔭 Scouting — Achat / Vente · Effet mouton</span>
+        <span style="font-size:11px;opacity:0.7;margin-left:8px">Top mouvements du jour · recoupés avec l'actualité</span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+        <div>
+          <div style="background:#dcfce7;padding:6px 12px;font-weight:bold;font-size:12px;color:#166534">
+            🟢 TOP ACHATS — momentum haussier
+          </div>
+          <table style="width:100%;border-collapse:collapse">{buys_rows}</table>
+        </div>
+        <div style="border-left:1px solid #e5e7eb">
+          <div style="background:#fee2e2;padding:6px 12px;font-weight:bold;font-size:12px;color:#991b1b">
+            🔴 TOP VENTES — pression baissière
+          </div>
+          <table style="width:100%;border-collapse:collapse">{sells_rows}</table>
+        </div>
+      </div>
+    </div>"""
+
 def color_pct(v):
     if v > 0: return f'<span style="color:#16a34a">▲{v:.1f}%</span>'
     if v < 0: return f'<span style="color:#dc2626">▼{abs(v):.1f}%</span>'
@@ -508,7 +638,7 @@ def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
       </table>
     </div>"""
 
-def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map):
+def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map, scouting=None):
     idx_rows = ""
     for name, val in indices_data:
         if val:
@@ -550,6 +680,7 @@ def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, n
     <table style="border-collapse:collapse;width:100%"><tr>{idx_rows}</tr></table>
   </div>
 
+  {scouting_html(scouting[0], scouting[1]) if scouting else ""}
   {radar_html}
   {section_html("🟢 A — Signaux d'achat forts (PEA)", "#16a34a", ca_rows, "Aucun signal fort aujourd'hui.")}
   {section_html("🟡 B — À surveiller", "#d97706", cb_rows, "Aucune valeur en zone de surveillance.")}
@@ -706,11 +837,16 @@ def main():
     news_map = get_ticker_news(signal_tickers)
     print(f"{len(news_map)} avec actualités")
 
+    # Scouting — top mouvements du jour
+    finnhub_key = os.environ.get("FINNHUB_KEY", "")
+    groq_key    = os.environ.get("GROQ_KEY", "")
+    scouting = build_scouting(sig, snp, finnhub_key, groq_key)
+
     # Radar trending
     static_universe = set({**CAC40,**DAX,**OTHER_EU,**PEA_ETFS,**NON_PEA}.keys())
     radar = radar_scan(static_universe)
 
-    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map)
+    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map, scouting)
     send_email(html, now)
 
 if __name__ == "__main__":
