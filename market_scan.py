@@ -84,6 +84,9 @@ INDICES = {
     "^N225":"Nikkei 225","^HSI":"Hang Seng","^KS11":"KOSPI (Corée)",
     "^TWII":"TAIEX (Taiwan)","000001.SS":"Shanghai Composite",
 }
+MACRO = {
+    "^VIX":"VIX","EURUSD=X":"EUR/USD","GC=F":"Or ($/oz)","BZ=F":"Brent ($/b)",
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  NLP / SENTIMENT
@@ -397,6 +400,11 @@ def analyze(ticker, df, min_periods=60):
         c1m  = float((close.iloc[-1]/close.iloc[-22]-1)*100) if len(close)>=22 else 0
         # Pente RSI sur 3 jours : hausse = dynamique en cours, baisse = essoufflement
         rsi_slope = float(r.iloc[-1] - r.iloc[-4]) if len(r)>=4 else 0.0
+        # 52 semaines high/low
+        w52 = close.iloc[-252:] if len(close)>=252 else close
+        h52 = float(w52.max()); l52 = float(w52.min())
+        pct_from_h52 = (cp/h52 - 1)*100   # négatif : distance au plus haut annuel
+        pct_from_l52 = (cp/l52 - 1)*100   # positif  : distance au plus bas annuel
         os = 0
         if cr<25: os+=3
         elif cr<35: os+=2
@@ -412,12 +420,24 @@ def analyze(ticker, df, min_periods=60):
         if float(ml.iloc[-1])>float(ms.iloc[-1]): ts+=1
         if 45<=cr<=68: ts+=1
         sr = find_sr_levels(close)
+        # Score de confiance /10 : agrège les signaux techniques indépendants
+        conf = 0
+        if bc: conf += 2
+        elif float(ml.iloc[-1])>float(ms.iloc[-1]): conf += 1
+        if a200 is True: conf += 2
+        if vr and vr>=1.5: conf += 2
+        elif vr and vr>=1.2: conf += 1
+        if rsi_slope > 0: conf += 1
+        if cpb < 0.3: conf += 1
+        if sr.get("breakout"): conf += 1
+        conf_score = min(conf, 10)
         return {"rsi":cr,"macd":float(ml.iloc[-1]),"signal":float(ms.iloc[-1]),"hist":ch,
                 "bull_cross":bc,"above_sma20":a20,"above_sma50":a50,"above_sma200":a200,
                 "vol_ratio":vr,"squeeze":squeeze,"pct_b":cpb,
                 "oversold_score":os,"trend_score":ts,"overbought":cr>72,
                 "price":cp,"change_1d":c1d,"change_5d":c5d,"change_1mo":c1m,
-                "rsi_slope":rsi_slope,
+                "rsi_slope":rsi_slope,"conf_score":conf_score,
+                "pct_from_h52":pct_from_h52,"pct_from_l52":pct_from_l52,
                 **sr}
     except: return None
 
@@ -560,12 +580,16 @@ def color_pct(v):
     return f'{v:.1f}%'
 
 def sr_hint_html(s):
-    """Affiche la distance au prochain support/résistance."""
+    """Affiche la distance au prochain support/résistance + ratio R/R."""
     parts = []
     if s.get("pct_to_res"):
         parts.append(f'<span style="color:#7c3aed;font-size:10px">Résist.&nbsp;+{s["pct_to_res"]:.1f}%</span>')
     if s.get("pct_to_sup"):
         parts.append(f'<span style="color:#0369a1;font-size:10px">Support&nbsp;-{s["pct_to_sup"]:.1f}%</span>')
+    if s.get("pct_to_res") and s.get("pct_to_sup") and s["pct_to_sup"] > 0:
+        rr = s["pct_to_res"] / s["pct_to_sup"]
+        col = "#16a34a" if rr >= 2 else ("#d97706" if rr >= 1 else "#dc2626")
+        parts.append(f'<span style="color:{col};font-size:10px;font-weight:bold">R/R&nbsp;{rr:.1f}×</span>')
     return (' &nbsp;·&nbsp; '.join(parts)) if parts else ""
 
 def news_html(news_entry):
@@ -594,6 +618,24 @@ def news_html(news_entry):
         if kw_html: html += f'<div style="margin-top:2px">{kw_html}</div>'
     return html
 
+def conf_badge_html(s):
+    """Badge score de confiance /10."""
+    c = s.get("conf_score", 0)
+    col = "#16a34a" if c>=7 else ("#d97706" if c>=4 else "#6b7280")
+    return f'<span style="color:{col};font-size:11px;font-weight:bold">⬤{c}/10</span>'
+
+def w52_hint_html(s):
+    """Contexte 52 semaines : proximité du plus haut / plus bas annuel."""
+    parts = []
+    h = s.get("pct_from_h52"); l = s.get("pct_from_l52")
+    if h is not None and h > -5:
+        parts.append(f'<span style="color:#7c3aed;font-size:10px">▲52sem&nbsp;{h:.1f}%</span>')
+    elif h is not None and h < -30:
+        parts.append(f'<span style="color:#6b7280;font-size:10px">▽52sem&nbsp;{h:.1f}%</span>')
+    if l is not None and l < 10:
+        parts.append(f'<span style="color:#dc2626;font-size:10px">↗52bas&nbsp;+{l:.1f}%</span>')
+    return (' &nbsp;·&nbsp; '.join(parts)) if parts else ""
+
 def html_row(name, ticker, s, badge="", news_map=None):
     ind = [f'RSI {s["rsi"]:.0f}']
     if s["bull_cross"]: ind.append("MACD↑")
@@ -602,16 +644,18 @@ def html_row(name, ticker, s, badge="", news_map=None):
     if s["above_sma200"] is True:  ind.append("▲SMA200")
     if s.get("vol_ratio") and s["vol_ratio"]>=1.5: ind.append(f'Vol×{s["vol_ratio"]:.1f}')
     if s.get("squeeze"): ind.append("BB squeeze")
-    ind_html  = " · ".join(ind)
+    ind_html   = " · ".join(ind)
     badge_html = f' <span style="color:#6b7280;font-size:12px">{badge}</span>' if badge else ""
-    sr_h = sr_hint_html(s)
-    sr_line = f'<div style="margin-top:2px;font-size:11px">{sr_h}</div>' if sr_h else ""
-    articles = (news_map or {}).get(ticker, [])
+    sr_h  = sr_hint_html(s); w52_h = w52_hint_html(s)
+    meta_parts = [p for p in [sr_h, w52_h] if p]
+    meta_line  = (f'<div style="margin-top:2px;font-size:11px">' + ' &nbsp;·&nbsp; '.join(meta_parts) + '</div>') if meta_parts else ""
+    articles   = (news_map or {}).get(ticker, [])
     return f"""
     <tr>
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker_link(ticker)})</span>{badge_html}<br>
-        <span style="font-size:12px;color:#555">{ind_html}</span>{sr_line}
+        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker_link(ticker)})</span>
+        &nbsp;{conf_badge_html(s)}{badge_html}<br>
+        <span style="font-size:12px;color:#555">{ind_html}</span>{meta_line}
         {news_html(articles)}
       </td>
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
@@ -783,9 +827,53 @@ def etf_rows_html(sig_etf, news_map=None):
     return rows
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  RÉSUMÉ EXÉCUTIF (Groq)
+# ═══════════════════════════════════════════════════════════════════════════════
+def build_groq_summary(indices_data, sr_break, eu_buy_all, snp_buy, macro_data, groq_key):
+    if not groq_key: return None
+    # Contexte indices
+    idx_lines = [f"{n}: {'+' if c>=0 else ''}{c:.1f}%" for n,v in indices_data[:6] if v for _,(p,c) in [("_",v)]]
+    idx_txt = ", ".join(
+        f"{n}: {'+' if v[1]>=0 else ''}{v[1]:.1f}%"
+        for n,v in indices_data[:6] if v
+    )
+    # Macro
+    macro_txt = ", ".join(
+        f"{n}: {v[0]:,.1f} ({'+' if v[1]>=0 else ''}{v[1]:.1f}%)"
+        for n,v in macro_data.items() if v
+    ) if macro_data else ""
+    # Top cassures
+    top_br = ", ".join(
+        f"{s['name']} (+{s.get('change_1d',0):.1f}%)"
+        for t,s in list(sr_break.items())[:4]
+    ) or "aucune"
+    # Top achats
+    top_buy = ", ".join(
+        f"{s['name']} (score {s.get('conf_score',0)}/10)"
+        for t,s in list(eu_buy_all.items())[:3]
+    ) or "aucun"
+    prompt = (
+        f"Tu es analyste financier senior. Contexte de marché du jour :\n"
+        f"Indices : {idx_txt}\n"
+        + (f"Macro : {macro_txt}\n" if macro_txt else "")
+        + f"Cassures de résistance : {top_br}\n"
+        f"Signaux d'achat Europe : {top_buy}\n\n"
+        f"En 3-4 phrases concises, rédige un résumé exécutif du contexte de marché "
+        f"et des points d'attention du jour. Identifie si le contexte est favorable ou défavorable "
+        f"pour les signaux détectés. Réponds en français, sans titre, directement le texte."
+    )
+    try:
+        from groq import Groq
+        resp = Groq(api_key=groq_key).chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role":"user","content":prompt}], max_tokens=200)
+        return resp.choices[0].message.content.strip()
+    except: return None
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  BUILD HTML PRINCIPAL
 # ═══════════════════════════════════════════════════════════════════════════════
-def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map):
+def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map, macro_data=None, groq_key=""):
     nm = news_map or {}
 
     # ── Indices ──────────────────────────────────────────────────────────────
@@ -805,7 +893,6 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     # ── S&R : Cassures + Supports ─────────────────────────────────────────────
     all_sig = {**sig_eu, **sig_etf, **snp}
     def _cassure_qualite(s):
-        """Cassure de qualité : volume confirmé OU mouvement significatif+tendance saine."""
         vol_ok  = s.get("vol_ratio") and s["vol_ratio"] >= 1.2
         move_ok = s.get("change_1d", 0) >= 2.0 and s.get("rsi", 100) < 70 and s.get("above_sma200")
         return vol_ok or move_ok
@@ -818,31 +905,43 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     )[:10])
     sr_supp  = {t:s for t,s in all_sig.items() if s.get("at_support")}
 
+    # ── Déduplication : un ticker n'apparaît que dans sa section prioritaire ──
+    used = set(sr_break.keys())
+    sr_supp_d = {t:s for t,s in sr_supp.items() if t not in used}
+    used |= set(sr_supp_d.keys())
+
     sr_break_rows = ""
-    for t,s in sorted(sr_break.items(), key=lambda x: x[1].get("change_1d",0), reverse=True):
+    for t,s in sr_break.items():
         res_lvl = s["breakout"]
         badge = f'🚀 +{((s["price"]/res_lvl)-1)*100:.1f}% au-dessus de {res_lvl:.2f}'
         sr_break_rows += html_row(s["name"], t, s, badge, nm)
 
     sr_supp_rows = ""
-    for t,s in sorted(sr_supp.items(), key=lambda x: x[1].get("pct_to_sup",999)):
+    for t,s in sorted(sr_supp_d.items(), key=lambda x: x[1].get("pct_to_sup",999)):
         sup_lvl = s["at_support"]
         badge = f'🛡️ à {s["pct_to_sup"]:.1f}% du support {sup_lvl:.2f}'
         sr_supp_rows += html_row(s["name"], t, s, badge, nm)
 
-    # ── Europe — signaux ──────────────────────────────────────────────────────
-    eu_buy_s = {t:s for t,s in sig_eu.items() if s["oversold_score"]>=4 and s["above_sma200"] is not False and not s["overbought"]}
-    eu_buy_m = {t:s for t,s in sig_eu.items() if 2<=s["oversold_score"]<4 and s["above_sma200"] is not False and not s["overbought"] and t not in eu_buy_s}
+    # ── Europe — signaux (déduplication) ─────────────────────────────────────
+    eu_buy_s = {t:s for t,s in sig_eu.items()
+                if t not in used and s["oversold_score"]>=4
+                and s["above_sma200"] is not False and not s["overbought"]}
+    eu_buy_m = {t:s for t,s in sig_eu.items()
+                if t not in used and 2<=s["oversold_score"]<4
+                and s["above_sma200"] is not False and not s["overbought"] and t not in eu_buy_s}
     eu_buy_all = (dict(sorted(eu_buy_s.items(), key=lambda x:x[1]["oversold_score"], reverse=True))
                 | dict(sorted(eu_buy_m.items(), key=lambda x:x[1]["oversold_score"], reverse=True)[:8]))
+    used |= set(eu_buy_all.keys())
     eu_buy_rows = "".join(
         html_row(s["name"], t, s,
                  ("⭐⭐ Fort" if s["oversold_score"]>=4 else "⭐ Modéré") + f' [{s["oversold_score"]}/8]', nm)
         for t,s in eu_buy_all.items()
     )
 
-    eu_mom = {t:s for t,s in sig_eu.items() if s["trend_score"]>=4 and s["oversold_score"]<=2 and not s["overbought"]}
-    eu_mom = dict(sorted(eu_mom.items(), key=lambda x:x[1]["trend_score"], reverse=True)[:10])
+    eu_mom = {t:s for t,s in sig_eu.items()
+              if t not in used and s["trend_score"]>=5 and s["oversold_score"]<=2 and not s["overbought"]}
+    eu_mom = dict(sorted(eu_mom.items(), key=lambda x:x[1]["trend_score"], reverse=True)[:8])
+    used |= set(eu_mom.keys())
     eu_mom_rows = "".join(html_row(s["name"],t,s,f'Trend {s["trend_score"]}/6',nm) for t,s in eu_mom.items())
 
     eu_ob = dict(sorted({t:s for t,s in sig_eu.items() if s["overbought"]}.items(),
@@ -879,6 +978,26 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
 
     n_eu = len(sig_eu); n_etf = len(sig_etf); n_snp = len(snp)
 
+    # ── Macro rows ───────────────────────────────────────────────────────────
+    macro_rows = ""
+    for mname, mval in (macro_data or {}).items():
+        if mval:
+            mp, mc = mval; mcol = "#16a34a" if mc>=0 else "#dc2626"; marrow = "▲" if mc>=0 else "▼"
+            macro_rows += (f'<td style="padding:6px 14px;text-align:center">'
+                           f'<div style="font-size:11px;color:#6b7280">{mname}</div>'
+                           f'<div style="font-weight:bold;font-size:13px">{mp:,.2f}</div>'
+                           f'<div style="color:{mcol};font-size:11px">{marrow}{abs(mc):.2f}%</div></td>')
+
+    # ── Résumé exécutif Groq ─────────────────────────────────────────────────
+    print(f"  [Résumé] Génération...", end=" ", flush=True)
+    summary_txt = build_groq_summary(indices_data, sr_break, eu_buy_all, {}, macro_data or {}, groq_key)
+    print("OK" if summary_txt else "skipped")
+    summary_html = (
+        f'<div style="background:#eff6ff;border-left:4px solid #2563eb;border-radius:6px;'
+        f'padding:12px 16px;margin-bottom:20px;font-size:13px;color:#1e3a5f;line-height:1.6">'
+        f'🤖 <strong>Contexte du jour</strong><br>{summary_txt}</div>'
+    ) if summary_txt else ""
+
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;background:#f9fafb;padding:20px">
@@ -891,10 +1010,12 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     </div>
   </div>
 
-  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:20px;overflow-x:auto">
+  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px;overflow-x:auto">
     <div style="font-weight:bold;margin-bottom:8px;color:#374151">Indices</div>
     <table style="border-collapse:collapse;width:100%"><tr>{idx_rows}</tr></table>
   </div>
+  {f'<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;margin-bottom:20px;overflow-x:auto"><div style="font-size:11px;color:#6b7280;margin-bottom:4px">Macro</div><table style="border-collapse:collapse"><tr>{macro_rows}</tr></table></div>' if macro_rows else ""}
+  {summary_html}
 
   {scouting_html(scouting[0], scouting[1]) if scouting else ""}
   {decouverte_html(decouvertes)}
@@ -986,6 +1107,13 @@ def main():
         else:
             print(f"  {n:<30} {'n/d':>12}")
 
+    macro_raw = get_all_indices(MACRO)
+    macro_data = {MACRO[t]: macro_raw.get(t) for t in MACRO}
+    print("  Macro :", " | ".join(
+        f"{MACRO[t]}: {macro_raw[t][0]:,.2f} ({macro_raw[t][1]:+.2f}%)"
+        for t in MACRO if macro_raw.get(t)) or "n/d"
+    )
+
     print()
     deu  = dl(list(EU_STOCKS_MAP.keys()), label="Europe (actions)")
     detf = dl(list(EU_ETFS.keys()),       label="ETFs")
@@ -1035,11 +1163,11 @@ def main():
             row_con(s["name"],t,s,("⭐⭐ Fort" if s["oversold_score"]>=4 else "⭐  Modéré") + f" [{s['oversold_score']}/8]")
     else: print("  Aucun signal d'achat détecté.")
 
-    eu_mom = {t:s for t,s in sig_eu.items() if s["trend_score"]>=4 and s["oversold_score"]<=2 and not s["overbought"]}
+    eu_mom = {t:s for t,s in sig_eu.items() if s["trend_score"]>=5 and s["oversold_score"]<=2 and not s["overbought"]}
     sec("EUROPE — MOMENTUM HAUSSIER","─")
     if eu_mom:
-        for t,s in dict(sorted(eu_mom.items(), key=lambda x:x[1]["trend_score"],reverse=True)[:10]).items():
-            row_con(s["name"],t,s,f"Trend {s['trend_score']}/6")
+        for t,s in dict(sorted(eu_mom.items(), key=lambda x:x[1]["trend_score"],reverse=True)[:8]).items():
+            row_con(s["name"],t,s,f"Trend {s['trend_score']}/6 · conf {s.get('conf_score',0)}/10")
     else: print("  Aucune tendance forte.")
 
     # ── USA + Asie ───────────────────────────────────────────────────────────
@@ -1086,7 +1214,8 @@ def main():
     print(f"  [Découvertes] {len(decouvertes)} valeurs retenues")
 
     # ── Email ─────────────────────────────────────────────────────────────────
-    html = build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map)
+    html = build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map,
+                      macro_data=macro_data, groq_key=groq_key)
     send_email(html, now)
 
 if __name__ == "__main__":
