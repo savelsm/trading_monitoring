@@ -614,7 +614,7 @@ def build_scouting(all_sig, finnhub_key, groq_key, top_n=3):
                     try:
                         from groq import Groq
                         resp = Groq(api_key=groq_key).chat.completions.create(
-                            model="llama-3.3-70b-versatile",
+                            model="llama-3.1-8b-instant",
                             messages=[{"role":"user","content":prompt}], max_tokens=130)
                         synthesis = resp.choices[0].message.content.strip()
                     except Exception as e:
