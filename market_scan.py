@@ -831,8 +831,6 @@ def etf_rows_html(sig_etf, news_map=None):
 # ═══════════════════════════════════════════════════════════════════════════════
 def build_groq_summary(indices_data, sr_break, eu_buy_all, snp_buy, macro_data, groq_key):
     if not groq_key: return None
-    # Contexte indices
-    idx_lines = [f"{n}: {'+' if c>=0 else ''}{c:.1f}%" for n,v in indices_data[:6] if v for _,(p,c) in [("_",v)]]
     idx_txt = ", ".join(
         f"{n}: {'+' if v[1]>=0 else ''}{v[1]:.1f}%"
         for n,v in indices_data[:6] if v
@@ -868,12 +866,14 @@ def build_groq_summary(indices_data, sr_break, eu_buy_all, snp_buy, macro_data, 
             model="llama-3.3-70b-versatile",
             messages=[{"role":"user","content":prompt}], max_tokens=200)
         return resp.choices[0].message.content.strip()
-    except: return None
+    except Exception as e:
+        print(f" [résumé Groq ERR: {e}]", end="", flush=True)
+        return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  BUILD HTML PRINCIPAL
 # ═══════════════════════════════════════════════════════════════════════════════
-def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map, macro_data=None, groq_key=""):
+def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map, macro_data=None, groq_key="", groq_summary=None):
     nm = news_map or {}
 
     # ── Indices ──────────────────────────────────────────────────────────────
@@ -989,9 +989,7 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
                            f'<div style="color:{mcol};font-size:11px">{marrow}{abs(mc):.2f}%</div></td>')
 
     # ── Résumé exécutif Groq ─────────────────────────────────────────────────
-    print(f"  [Résumé] Génération...", end=" ", flush=True)
-    summary_txt = build_groq_summary(indices_data, sr_break, eu_buy_all, {}, macro_data or {}, groq_key)
-    print("OK" if summary_txt else "skipped")
+    summary_txt = groq_summary  # pre-computed in main() before news fetching
     summary_html = (
         f'<div style="background:#eff6ff;border-left:4px solid #2563eb;border-radius:6px;'
         f'padding:12px 16px;margin-bottom:20px;font-size:13px;color:#1e3a5f;line-height:1.6">'
@@ -1194,18 +1192,25 @@ def main():
     print(f"  Cassures résistance : {len(sr_break)} · Rebonds support : {len(sr_supp)} · BB squeeze : {len(sq)}")
     print("="*W)
 
+    # ── Résumé Groq (avant news pour éviter le rate limit) ───────────────────
+    groq_key = os.environ.get("GROQ_KEY","")
+    print(f"\n  [Résumé] Génération...", end=" ", flush=True)
+    groq_summary = build_groq_summary(indices_data, sr_break, eu_buy, snp_buy, macro_data or {}, groq_key)
+    print("OK" if groq_summary else "skipped")
+
     # ── News ─────────────────────────────────────────────────────────────────
+    # Widen to trend_score>=4 for news fetching (display still uses >=5)
+    eu_mom_news = {t for t,s in sig_eu.items() if s["trend_score"]>=4 and not s["overbought"]}
     signal_tickers = list(set(
-        list(eu_buy) + list(eu_mom) + list(sr_break) + list(sr_supp)
+        list(eu_buy) + list(eu_mom_news) + list(sr_break) + list(sr_supp)
         + list(snp_buy) + list(snp_mom)
     ))
-    print(f"\n  [News] {len(signal_tickers)} valeurs...", end=" ", flush=True)
+    print(f"  [News] {len(signal_tickers)} valeurs...", end=" ", flush=True)
     news_map = get_ticker_news(signal_tickers)
     print(f"{len(news_map)} avec actualités")
 
     # ── Scouting ─────────────────────────────────────────────────────────────
     finnhub_key = os.environ.get("FINNHUB_KEY","")
-    groq_key    = os.environ.get("GROQ_KEY","")
     scouting = build_scouting(all_sig, finnhub_key, groq_key)
 
     # ── Découvertes ───────────────────────────────────────────────────────────
@@ -1215,7 +1220,7 @@ def main():
 
     # ── Email ─────────────────────────────────────────────────────────────────
     html = build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map,
-                      macro_data=macro_data, groq_key=groq_key)
+                      macro_data=macro_data, groq_key=groq_key, groq_summary=groq_summary)
     send_email(html, now)
 
 if __name__ == "__main__":
