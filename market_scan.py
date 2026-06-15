@@ -193,7 +193,9 @@ def groq_synthesize(ticker_name, articles, groq_key, prompt_override=None):
         print(f" [groq ERR: {e}]", end="", flush=True)
         return None
 
-def get_ticker_news(tickers, max_per_ticker=3):
+def get_ticker_news(tickers, max_per_ticker=3, synthesize_for=None):
+    """Récupère les news. synthesize_for : set de tickers prioritaires pour la synthèse Groq.
+    Si None, synthétise tout (attention aux rate limits). Si set vide, aucune synthèse."""
     finnhub_key = os.environ.get("FINNHUB_KEY", "")
     groq_key    = os.environ.get("GROQ_KEY", "")
     sources = []
@@ -221,7 +223,8 @@ def get_ticker_news(tickers, max_per_ticker=3):
                                         title[:95], extract_keywords(title), ""))
             except: pass
         synthesis = None
-        if groq_key and (raw_finnhub or entries):
+        do_synth = (synthesize_for is None) or (t in synthesize_for)
+        if groq_key and do_synth and (raw_finnhub or entries):
             src = raw_finnhub if raw_finnhub else [{"headline":e[1],"summary":""} for e in entries]
             synthesis = groq_synthesize(t, src, groq_key)
         if entries or synthesis:
@@ -601,21 +604,19 @@ def news_html(news_entry):
         html += (f'<div style="margin-top:6px;padding:6px 8px;background:#f0fdf4;'
                  f'border-left:3px solid #16a34a;border-radius:3px;font-size:11px;color:#166534">'
                  f'🤖 {synthesis}</div>')
-    seen = set()
-    for item in articles[:2]:
-        src = item[0]; title = item[1]
-        keywords = item[2] if len(item)>2 else []
-        url = item[3] if len(item)>3 else ""
-        if title in seen: continue
-        seen.add(title)
-        kw_html = " ".join(
-            f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
-            f'padding:1px 5px;border-radius:3px;font-size:10px">{k}</span>'
-            for k in keywords[:4])
-        title_html = (f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{title}</a>'
-                      if url else title)
-        html += f'<div style="margin-top:4px;font-size:11px;color:#4b5563">📰 <em>[{src}]</em> {title_html}</div>'
-        if kw_html: html += f'<div style="margin-top:2px">{kw_html}</div>'
+    # Boutons Source (sans titre)
+    src_buttons = ""
+    for i, item in enumerate(articles[:3]):
+        url = item[3] if len(item) > 3 else ""
+        if url:
+            src_buttons += (
+                f'<a href="{url}" style="display:inline-block;margin:3px 4px 0 0;'
+                f'padding:2px 8px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;'
+                f'border-radius:4px;font-size:10px;text-decoration:none" target="_blank">'
+                f'🔗 Source {i+1}</a>'
+            )
+    if src_buttons:
+        html += f'<div style="margin-top:4px">{src_buttons}</div>'
     return html
 
 def conf_badge_html(s):
@@ -704,15 +705,18 @@ def scouting_html(buys, sells):
         rsi_dir = "↑" if rsi_slope > 0 else ("↓" if rsi_slope < 0 else "→")
         rsi_tag = f'<span style="font-size:11px;color:#6b7280">RSI {s["rsi"]:.0f}{rsi_dir}</span>'
         arts_html = ""
-        for a in item["articles"][:2]:
-            h = a.get("headline","")[:90]; url = a.get("url",""); src = a.get("source","")
-            kw = extract_keywords(h)
-            kw_html = " ".join(
-                f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
-                f'padding:1px 4px;border-radius:3px;font-size:10px">{k}</span>' for k in kw[:4])
-            lnk = f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{h}</a>' if url else h
-            arts_html += f'<div style="margin-top:3px;font-size:11px;color:#4b5563">📰 [{src}] {lnk}</div>'
-            if kw_html: arts_html += f'<div style="margin-top:2px">{kw_html}</div>'
+        src_btns = ""
+        for i, a in enumerate(item["articles"][:3]):
+            url = a.get("url","")
+            if url:
+                src_btns += (
+                    f'<a href="{url}" style="display:inline-block;margin:3px 4px 0 0;'
+                    f'padding:2px 8px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;'
+                    f'border-radius:4px;font-size:10px;text-decoration:none" target="_blank">'
+                    f'🔗 Source {i+1}</a>'
+                )
+        if src_btns:
+            arts_html = f'<div style="margin-top:4px">{src_btns}</div>'
         synth_html = (
             f'<div style="margin-top:6px;padding:5px 8px;background:{col_bg};'
             f'border-left:3px solid {col_bdr};border-radius:3px;font-size:11px;color:{col_txt}">'
@@ -768,15 +772,18 @@ def decouverte_html(decouvertes):
         src_tag = (f'<span style="color:#7c3aed;font-size:11px;font-weight:bold">{src}'
                    + (f'&nbsp;×{cnt}' if cnt>1 else '') + '</span>')
         arts_html = ""
-        for a in arts:
-            h = a.get("headline","")[:90]; url = a.get("url",""); sc = a.get("source","")
-            kw = extract_keywords(h)
-            kw_html = " ".join(
-                f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
-                f'padding:1px 4px;border-radius:3px;font-size:10px">{k}</span>' for k in kw[:4])
-            lnk = f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{h}</a>' if url else h
-            arts_html += f'<div style="margin-top:3px;font-size:11px;color:#4b5563">📰 [{sc}] {lnk}</div>'
-            if kw_html: arts_html += f'<div style="margin-top:2px">{kw_html}</div>'
+        src_btns = ""
+        for i, a in enumerate(arts[:3]):
+            url = a.get("url","")
+            if url:
+                src_btns += (
+                    f'<a href="{url}" style="display:inline-block;margin:3px 4px 0 0;'
+                    f'padding:2px 8px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;'
+                    f'border-radius:4px;font-size:10px;text-decoration:none" target="_blank">'
+                    f'🔗 Source {i+1}</a>'
+                )
+        if src_btns:
+            arts_html = f'<div style="margin-top:4px">{src_btns}</div>'
         synth_html = (
             f'<div style="margin-top:5px;padding:5px 8px;background:#f5f3ff;'
             f'border-left:3px solid #7c3aed;border-radius:3px;font-size:11px;color:#5b21b6">'
@@ -1205,8 +1212,10 @@ def main():
         list(eu_buy) + list(eu_mom_news) + list(sr_break) + list(sr_supp)
         + list(snp_buy) + list(snp_mom)
     ))
-    print(f"  [News] {len(signal_tickers)} valeurs...", end=" ", flush=True)
-    news_map = get_ticker_news(signal_tickers)
+    # Synthèse Groq uniquement pour les signaux prioritaires (évite le rate limit)
+    synthesize_for = set(sr_break) | set(eu_buy) | set(sr_supp) | set(snp_buy)
+    print(f"  [News] {len(signal_tickers)} valeurs ({len(synthesize_for)} avec synthèse)...", end=" ", flush=True)
+    news_map = get_ticker_news(signal_tickers, synthesize_for=synthesize_for)
     print(f"{len(news_map)} avec actualités")
 
     # ── Scouting ─────────────────────────────────────────────────────────────
