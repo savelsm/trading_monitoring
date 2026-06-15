@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-import sys, warnings, os, smtplib, io, re, json
+"""
+Veille stratégique Bourse
+Sections : Scouting · Découvertes · S&R · Europe · ETFs · USA+Asie
+"""
+import warnings, os, smtplib, re, json
 warnings.filterwarnings("ignore")
 import pandas as pd
 import numpy as np
@@ -9,6 +13,9 @@ from email.mime.text import MIMEText
 import urllib.request
 import yfinance as yf
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  UNIVERS
+# ═══════════════════════════════════════════════════════════════════════════════
 CAC40 = {
     "AI.PA":"Air Liquide","AIR.PA":"Airbus","ALO.PA":"Alstom","ATO.PA":"Atos",
     "BN.PA":"Danone","BNP.PA":"BNP Paribas","CA.PA":"Carrefour","CAP.PA":"Capgemini",
@@ -37,12 +44,21 @@ OTHER_EU = {
     "NOVO-B.CO":"Novo Nordisk (DK)","ITX.MC":"Inditex (ES)","SAN.MC":"Banco Santander (ES)",
     "IBE.MC":"Iberdrola (ES)","ENI.MI":"ENI (IT)","RACE.MI":"Ferrari (IT)",
 }
-PEA_ETFS = {
-    "PAASI.PA":"Amundi PEA Emerging Asia ESG","PAEEM.PA":"Amundi PEA Emerging Markets",
+# DCAM.PA = Amundi MSCI Europe → exposition européenne → rangé avec les actions EU
+EU_STOCKS_MAP = {**CAC40, **DAX, **OTHER_EU, "DCAM.PA": "Amundi MSCI Europe"}
+
+# ETFs à exposition mondiale/US/Asie → section dédiée
+EU_ETFS = {
+    "PAASI.PA":"Amundi PEA Emerging Asia","PAEEM.PA":"Amundi PEA Emerging Markets",
     "PINR.PA":"Amundi PEA MSCI India","PAEJ.PA":"Amundi PEA Japan",
-    "PTPXE.PA":"Amundi PEA Topix","DCAM.PA":"Amundi MSCI Europe",
-    "ESE.PA":"BNP Paribas S&P 500 (PEA)","WPEA.PA":"iShares MSCI World Swap PEA",
-    "ANX.PA":"Amundi Nasdaq-100 (PEA)","RS2K.PA":"Amundi Russell 2000 (PEA)",
+    "PTPXE.PA":"Amundi PEA Topix","ESE.PA":"BNP S&P 500 (PEA)",
+    "WPEA.PA":"iShares MSCI World Swap PEA","ANX.PA":"Amundi Nasdaq-100 (PEA)",
+    "RS2K.PA":"Amundi Russell 2000 (PEA)",
+}
+ETF_INDEX = {
+    "PAASI.PA":"Emerging Asia","PAEEM.PA":"Emerging Markets","PINR.PA":"MSCI India",
+    "PAEJ.PA":"Japon","PTPXE.PA":"Topix","DCAM.PA":"MSCI Europe",
+    "ESE.PA":"S&P 500","WPEA.PA":"MSCI World","ANX.PA":"Nasdaq-100","RS2K.PA":"Russell 2000",
 }
 NON_PEA = {
     # USA
@@ -50,20 +66,17 @@ NON_PEA = {
     "META":"Meta","GOOGL":"Alphabet","AVGO":"Broadcom",
     "BRK-B":"Berkshire Hathaway","XOM":"ExxonMobil","JPM":"JPMorgan Chase",
     # Japon
-    "7203.T":"Toyota","6758.T":"Sony","9984.T":"SoftBank",
-    "6861.T":"Keyence","6954.T":"Fanuc","4063.T":"Shin-Etsu Chemical",
-    "8306.T":"MUFG","9432.T":"NTT","6501.T":"Hitachi","6902.T":"Denso",
-    # Corée du Sud
-    "005930.KS":"Samsung Electronics","000660.KS":"SK Hynix",
-    "035420.KS":"NAVER","051910.KS":"LG Chem","006400.KS":"Samsung SDI",
-    "035720.KS":"Kakao","000270.KS":"Kia Motors",
+    "7203.T":"Toyota","6758.T":"Sony","9984.T":"SoftBank","6861.T":"Keyence",
+    "6954.T":"Fanuc","4063.T":"Shin-Etsu Chemical","8306.T":"MUFG",
+    "9432.T":"NTT","6501.T":"Hitachi","6902.T":"Denso",
+    # Corée
+    "005930.KS":"Samsung Electronics","000660.KS":"SK Hynix","035420.KS":"NAVER",
+    "051910.KS":"LG Chem","006400.KS":"Samsung SDI","035720.KS":"Kakao","000270.KS":"Kia Motors",
     # Taiwan
-    "TSM":"TSMC","2454.TW":"MediaTek","2317.TW":"Hon Hai (Foxconn)",
-    "2308.TW":"Delta Electronics",
-    # Chine (cotées Hong Kong)
-    "0700.HK":"Tencent","9988.HK":"Alibaba","3690.HK":"Meituan",
-    "1810.HK":"Xiaomi","1211.HK":"BYD","9618.HK":"JD.com",
-    "2318.HK":"Ping An","0941.HK":"China Mobile",
+    "TSM":"TSMC","2454.TW":"MediaTek","2317.TW":"Hon Hai (Foxconn)","2308.TW":"Delta Electronics",
+    # HK/Chine
+    "0700.HK":"Tencent","9988.HK":"Alibaba","3690.HK":"Meituan","1810.HK":"Xiaomi",
+    "1211.HK":"BYD","9618.HK":"JD.com","2318.HK":"Ping An","0941.HK":"China Mobile",
 }
 INDICES = {
     "^FCHI":"CAC 40","^STOXX50E":"Euro Stoxx 50","^GDAXI":"DAX 40",
@@ -72,6 +85,9 @@ INDICES = {
     "^TWII":"TAIEX (Taiwan)","000001.SS":"Shanghai Composite",
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  NLP / SENTIMENT
+# ═══════════════════════════════════════════════════════════════════════════════
 STOP_WORDS = {
     "le","la","les","de","du","des","un","une","en","et","à","au","aux","par","sur",
     "pour","avec","dans","que","qui","se","sa","son","ses","ce","cet","cette","ces",
@@ -81,15 +97,13 @@ STOP_WORDS = {
     "may","can","also","than","into","been","about","over","up","out","their",
 }
 FINANCIAL_TERMS = {
-    # Français
     "résultats","bénéfice","dividende","acquisition","fusion","rachat","chiffre",
     "croissance","perte","dette","restructuration","guidance","trimestre","annuel",
     "hausse","baisse","progression","recul","record","objectif","prévision",
     "investissement","contrat","partenariat","cession","introduction","offre",
-    # Anglais
     "earnings","profit","revenue","dividend","buyback","merger","outlook","downgrade",
-    "upgrade","target","beat","miss","rally","surge","guidance","acquisition",
-    "quarterly","annual","growth","loss","debt","restructuring","contract","deal",
+    "upgrade","target","beat","miss","rally","surge","quarterly","annual","growth",
+    "loss","debt","restructuring","contract","deal",
 }
 POSITIVE_WORDS = {
     "hausse","progression","record","croissance","beat","surge","rally","strong",
@@ -102,8 +116,7 @@ NEGATIVE_WORDS = {
 
 def sentiment_icon(title):
     words = {w.lower() for w in re.findall(r'\b\w+\b', title)}
-    pos = len(words & POSITIVE_WORDS)
-    neg = len(words & NEGATIVE_WORDS)
+    pos = len(words & POSITIVE_WORDS); neg = len(words & NEGATIVE_WORDS)
     if pos > neg: return "🟢"
     if neg > pos: return "🔴"
     return "⚪"
@@ -113,20 +126,19 @@ def extract_keywords(text, n=5):
     filtered = [w for w in words if w.lower() not in STOP_WORDS]
     freq = {}
     for w in filtered:
-        w_lower = w.lower()
-        score = 3 if w_lower in FINANCIAL_TERMS else 1
-        freq[w_lower] = freq.get(w_lower, 0) + score
+        wl = w.lower()
+        freq[wl] = freq.get(wl, 0) + (3 if wl in FINANCIAL_TERMS else 1)
     return sorted(freq, key=freq.get, reverse=True)[:n]
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  NEWS & GROQ
+# ═══════════════════════════════════════════════════════════════════════════════
 def _finnhub_news(ticker, finnhub_key, days=5):
-    """Récupère les actualités Finnhub. Essaie le symbole complet puis sans suffixe."""
     from datetime import timedelta
     now_dt = datetime.now(timezone.utc)
     date_from = (now_dt - timedelta(days=days)).strftime("%Y-%m-%d")
     date_to   = now_dt.strftime("%Y-%m-%d")
-    candidates = [ticker]
-    if "." in ticker:
-        candidates.append(ticker.split(".")[0])
+    candidates = [ticker] + ([ticker.split(".")[0]] if "." in ticker else [])
     for sym in candidates:
         try:
             url = (f"https://finnhub.io/api/v1/company-news?symbol={sym}"
@@ -134,42 +146,33 @@ def _finnhub_news(ticker, finnhub_key, days=5):
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read())
-            if isinstance(data, list) and len(data) > 0:
+            if isinstance(data, list) and data:
                 return data
-        except:
-            pass
+        except: pass
     return []
 
 def _parse_yf_news_item(item):
-    """Parse un article yfinance — compatible ancien et nouveau format."""
-    # Nouveau format yfinance >= 0.2.37 : imbriqué sous "content"
     content = item.get("content", {})
     if content:
         title     = content.get("title", "")
         provider  = content.get("provider", {})
         publisher = provider.get("displayName", "") if isinstance(provider, dict) else ""
     else:
-        # Ancien format plat
         title     = item.get("title", "")
         publisher = item.get("publisher", "")
     return title.strip(), publisher.strip()
 
-def groq_synthesize(ticker_name, articles, groq_key):
-    """Appelle Groq via SDK officiel (évite le blocage Cloudflare de urllib)."""
+def groq_synthesize(ticker_name, articles, groq_key, prompt_override=None):
     try:
         from groq import Groq
     except ImportError:
-        print(" [groq ERR: package 'groq' non installé]", end="", flush=True)
         return None
     texts = []
     for item in articles[:3]:
-        headline = item.get("headline", "")
-        summary  = item.get("summary", "")
-        if headline:
-            texts.append(f"- {headline}" + (f" : {summary[:200]}" if summary else ""))
-    if not texts:
-        return None
-    prompt = (
+        h = item.get("headline", ""); su = item.get("summary", "")
+        if h: texts.append(f"- {h}" + (f" : {su[:200]}" if su else ""))
+    if not texts: return None
+    prompt = prompt_override or (
         f"Tu es analyste financier. Voici des articles récents sur {ticker_name} :\n\n"
         + "\n".join(texts)
         + "\n\nEn 2 phrases maximum, explique la tendance actuelle et pourquoi ce titre "
@@ -177,12 +180,12 @@ def groq_synthesize(ticker_name, articles, groq_key):
     )
     try:
         client = Groq(api_key=groq_key)
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=120,
         )
-        return response.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
     except Exception as e:
         print(f" [groq ERR: {e}]", end="", flush=True)
         return None
@@ -192,54 +195,39 @@ def get_ticker_news(tickers, max_per_ticker=3):
     groq_key    = os.environ.get("GROQ_KEY", "")
     sources = []
     if finnhub_key: sources.append("Finnhub")
-    if groq_key:    sources.append("Groq synthèse")
+    if groq_key:    sources.append("Groq")
     if not finnhub_key: sources.append("yfinance")
     print(f"    [news] Sources : {', '.join(sources)}", end=" ", flush=True)
-
     news_map = {}
     for t in tickers:
-        entries      = []
-        raw_finnhub  = []
-
-        # --- Source 1 : Finnhub ---
+        entries = []; raw_finnhub = []
         if finnhub_key:
             raw_finnhub = _finnhub_news(t, finnhub_key)
             for item in raw_finnhub[:max_per_ticker]:
-                headline = item.get("headline", "")
-                source   = item.get("source", "Finnhub")
-                summary  = item.get("summary", "")
-                if headline:
-                    icon = sentiment_icon(headline)
-                    kw   = extract_keywords(headline + " " + summary)
-                    url  = item.get("url", "")
-                    entries.append((f"{icon} {source}", headline[:95], kw, url))
-
-        # --- Source 2 : yfinance (fallback si Finnhub vide) ---
+                h = item.get("headline",""); src = item.get("source","Finnhub")
+                su = item.get("summary",""); url = item.get("url","")
+                if h:
+                    entries.append((f"{sentiment_icon(h)} {src}", h[:95],
+                                    extract_keywords(h+" "+su), url))
         if not entries:
             try:
-                raw_items = yf.Ticker(t).news or []
-                for item in raw_items[:max_per_ticker]:
-                    title, publisher = _parse_yf_news_item(item)
+                for item in (yf.Ticker(t).news or [])[:max_per_ticker]:
+                    title, pub = _parse_yf_news_item(item)
                     if title:
-                        icon = sentiment_icon(title)
-                        kw   = extract_keywords(title)
-                        entries.append((f"{icon} {publisher}", title[:95], kw))
-            except Exception as e:
-                print(f"\n    [news] yf ERR {t}: {e}", end=" ", flush=True)
-
-        # --- Source 3 : Synthèse Groq (si articles disponibles) ---
+                        entries.append((f"{sentiment_icon(title)} {pub}",
+                                        title[:95], extract_keywords(title), ""))
+            except: pass
         synthesis = None
         if groq_key and (raw_finnhub or entries):
-            src = raw_finnhub if raw_finnhub else [
-                {"headline": e[1], "summary": ""} for e in entries
-            ]
+            src = raw_finnhub if raw_finnhub else [{"headline":e[1],"summary":""} for e in entries]
             synthesis = groq_synthesize(t, src, groq_key)
-
         if entries or synthesis:
             news_map[t] = {"articles": entries, "synthesis": synthesis}
-
     return news_map
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DONNÉES MARCHÉ
+# ═══════════════════════════════════════════════════════════════════════════════
 def get_all_indices(indices_dict):
     results = {}
     tickers = list(indices_dict.keys())
@@ -254,28 +242,25 @@ def get_all_indices(indices_dict):
                     if len(close) >= 2:
                         results[t] = (float(close.iloc[-1]),
                                       float((close.iloc[-1]/close.iloc[-2]-1)*100))
-            except:
-                pass
+            except: pass
     except Exception as e:
         print(f"  [indices] ERR: {e}")
     return results
 
 def get_yahoo_trending():
     tickers = set()
-    EU_SUFFIXES = (".PA",".DE",".AS",".MC",".MI",".CO",".L",".BR",".LS",".SW")
+    EU_SUFFIXES   = (".PA",".DE",".AS",".MC",".MI",".CO",".L",".BR",".LS",".SW")
     ASIA_SUFFIXES = (".T",".KS",".TW",".HK",".SS",".SZ")
-    US_LARGECAP = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","TSM","AVGO","JPM","XOM","BRK-B"}
+    US_LARGECAP   = {"NVDA","AAPL","MSFT","AMZN","META","GOOGL","TSM","AVGO","JPM","XOM","BRK-B"}
     for market in ["FR","DE","GB","JP","KR","TW","HK"]:
         try:
             url = f"https://query1.finance.yahoo.com/v1/finance/trending/{market}"
             req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
-            result = data.get("finance", {}).get("result") or []
-            if not result:
-                continue
-            quotes = result[0].get("quotes", [])
-            for q in quotes:
+            result = data.get("finance",{}).get("result") or []
+            if not result: continue
+            for q in result[0].get("quotes",[]):
                 sym = q.get("symbol","")
                 if any(sym.endswith(s) for s in EU_SUFFIXES+ASIA_SUFFIXES):
                     tickers.add(sym)
@@ -285,25 +270,41 @@ def get_yahoo_trending():
             print(f"  [trending {market}] {e}")
     return tickers
 
+def dl(tickers, period="14mo", label=""):
+    if not tickers: return {}
+    print(f"  {label} ({len(tickers)})...", end=" ", flush=True)
+    try:
+        raw = yf.download(list(tickers), period=period, auto_adjust=True,
+                          group_by="ticker", threads=True, progress=False)
+    except Exception as e:
+        print(f"ERR:{e}"); return {}
+    result = {}
+    for t in tickers:
+        try:
+            df = raw if len(tickers)==1 else (raw[t] if t in raw.columns.get_level_values(0) else None)
+            if df is not None and not df.empty and len(df)>=30: result[t]=df
+        except: pass
+    print(f"{len(result)}/{len(tickers)} OK")
+    return result
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ANALYSE TECHNIQUE + SUPPORTS / RÉSISTANCES
+# ═══════════════════════════════════════════════════════════════════════════════
 def rsi(close, period=14):
     delta = close.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gain = delta.clip(lower=0); loss = -delta.clip(upper=0)
     ag = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     al = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    rs = ag / al.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + ag/al.replace(0, np.nan)))
 
 def macd(close, fast=12, slow=26, sig=9):
     ef = close.ewm(span=fast, adjust=False).mean()
     es = close.ewm(span=slow, adjust=False).mean()
-    line = ef - es
-    signal = line.ewm(span=sig, adjust=False).mean()
+    line = ef - es; signal = line.ewm(span=sig, adjust=False).mean()
     return line, signal, line - signal
 
 def bollinger(close, period=20, nb=2):
-    mid = close.rolling(period).mean()
-    std = close.rolling(period).std()
+    mid = close.rolling(period).mean(); std = close.rolling(period).std()
     upper = mid + nb*std; lower = mid - nb*std
     bw = (upper - lower) / mid
     pct_b = (close - lower) / (upper - lower).replace(0, np.nan)
@@ -311,21 +312,74 @@ def bollinger(close, period=20, nb=2):
 
 def sma(close, p): return close.rolling(p).mean()
 
+def find_sr_levels(close, window=10, cluster_pct=0.025, lookback=130):
+    """
+    Détecte les niveaux de support et résistance par pivots locaux (~6 mois).
+    - Résistance : pic local (max sur fenêtre ±window bougies)
+    - Support    : creux local (min sur fenêtre ±window bougies)
+    - Clustering : regroupe les niveaux à moins de cluster_pct les uns des autres
+    """
+    data    = close.iloc[-lookback:] if len(close) > lookback else close
+    current = float(close.iloc[-1])
+    prev    = float(close.iloc[-2]) if len(close) >= 2 else current
+
+    highs, lows = [], []
+    for i in range(window, len(data) - window):
+        v   = float(data.iloc[i])
+        win = data.iloc[max(0, i-window):i+window+1]
+        if v >= float(win.max()) * 0.9985: highs.append(v)
+        if v <= float(win.min()) * 1.0015: lows.append(v)
+
+    def cluster(lvls):
+        if not lvls: return []
+        lvls = sorted(set(lvls)); grps = [[lvls[0]]]
+        for l in lvls[1:]:
+            if l <= grps[-1][-1] * (1 + cluster_pct): grps[-1].append(l)
+            else: grps.append([l])
+        return [sum(g)/len(g) for g in grps]
+
+    res = cluster(highs); sup = cluster(lows)
+
+    res_above = [r for r in res if r > current * 1.005]
+    sup_below = [s for s in sup if s < current * 0.995]
+    nearest_res = min(res_above, key=lambda x: x-current) if res_above else None
+    nearest_sup = max(sup_below) if sup_below else None
+
+    # Cassure de résistance : hier sous le niveau, aujourd'hui au-dessus (max +4%)
+    breakout = None
+    for r in sorted(res):
+        if prev < r <= current * 1.04:
+            breakout = r; break
+
+    # Rebond sur support : prix à ≤2.5% au-dessus d'un support
+    at_support = None
+    if nearest_sup:
+        pct = (current - nearest_sup) / nearest_sup * 100
+        if 0 <= pct <= 2.5: at_support = nearest_sup
+
+    return {
+        "nearest_res": nearest_res,
+        "nearest_sup": nearest_sup,
+        "breakout":    breakout,
+        "at_support":  at_support,
+        "pct_to_res":  ((nearest_res/current)-1)*100 if nearest_res else None,
+        "pct_to_sup":  ((current/nearest_sup)-1)*100 if nearest_sup else None,
+    }
+
 def analyze(ticker, df):
     if df is None or len(df) < 60: return None
-    close = df["Close"].dropna()
+    close  = df["Close"].dropna()
     volume = df["Volume"].dropna() if "Volume" in df.columns else None
     if len(close) < 60: return None
     try:
-        r = rsi(close)
-        ml, ms, mh = macd(close)
+        r  = rsi(close); ml, ms, mh = macd(close)
         _, _, _, bw, pct_b = bollinger(close)
         s20, s50, s200 = sma(close,20), sma(close,50), sma(close,200)
         cr = float(r.iloc[-1])
         ch = float(mh.iloc[-1]); ph = float(mh.iloc[-2]) if len(mh)>1 else 0
         cp = float(close.iloc[-1])
-        cs20 = float(s20.iloc[-1]) if not np.isnan(s20.iloc[-1]) else None
-        cs50 = float(s50.iloc[-1]) if not np.isnan(s50.iloc[-1]) else None
+        cs20  = float(s20.iloc[-1])  if not np.isnan(s20.iloc[-1])  else None
+        cs50  = float(s50.iloc[-1])  if not np.isnan(s50.iloc[-1])  else None
         cs200 = float(s200.iloc[-1]) if not np.isnan(s200.iloc[-1]) else None
         cbw = float(bw.iloc[-1]); pbw = float(bw.iloc[-5]) if len(bw)>5 else cbw
         squeeze = cbw < pbw*0.85
@@ -334,13 +388,13 @@ def analyze(ticker, df):
         if volume is not None and len(volume)>=20:
             v5 = float(volume.iloc[-5:].mean()); v20 = float(volume.iloc[-20:].mean())
             if v20>0: vr = v5/v20
-        bc = ch>0 and ph<=0
-        a20 = cp>cs20 if cs20 else None
-        a50 = cp>cs50 if cs50 else None
+        bc   = ch>0 and ph<=0
+        a20  = cp>cs20  if cs20  else None
+        a50  = cp>cs50  if cs50  else None
         a200 = cp>cs200 if cs200 else None
-        c1d = float((close.iloc[-1]/close.iloc[-2]-1)*100) if len(close)>=2 else 0
-        c2d = float((close.iloc[-1]/close.iloc[-3]-1)*100) if len(close)>=3 else c1d
-        c1m = float((close.iloc[-1]/close.iloc[-22]-1)*100) if len(close)>=22 else 0
+        c1d  = float((close.iloc[-1]/close.iloc[-2]-1)*100)  if len(close)>=2  else 0
+        c2d  = float((close.iloc[-1]/close.iloc[-3]-1)*100)  if len(close)>=3  else c1d
+        c1m  = float((close.iloc[-1]/close.iloc[-22]-1)*100) if len(close)>=22 else 0
         os = 0
         if cr<25: os+=3
         elif cr<35: os+=2
@@ -355,128 +409,124 @@ def analyze(ticker, df):
         if a200: ts+=2
         if float(ml.iloc[-1])>float(ms.iloc[-1]): ts+=1
         if 45<=cr<=68: ts+=1
+        sr = find_sr_levels(close)
         return {"rsi":cr,"macd":float(ml.iloc[-1]),"signal":float(ms.iloc[-1]),"hist":ch,
                 "bull_cross":bc,"above_sma20":a20,"above_sma50":a50,"above_sma200":a200,
                 "vol_ratio":vr,"squeeze":squeeze,"pct_b":cpb,
                 "oversold_score":os,"trend_score":ts,"overbought":cr>72,
-                "price":cp,"change_1d":c1d,"change_2d":c2d,"change_1mo":c1m}
+                "price":cp,"change_1d":c1d,"change_2d":c2d,"change_1mo":c1m,
+                **sr}
     except: return None
 
-def dl(tickers, period="14mo", label=""):
-    if not tickers: return {}
-    print(f"  {label} ({len(tickers)})...", end=" ", flush=True)
-    try:
-        raw = yf.download(list(tickers), period=period, auto_adjust=True,
-                          group_by="ticker", threads=True, progress=False)
-    except Exception as e: print(f"ERR:{e}"); return {}
-    result = {}
-    for t in tickers:
-        try:
-            df = raw if len(tickers)==1 else (raw[t] if t in raw.columns.get_level_values(0) else None)
-            if df is not None and not df.empty and len(df)>=30: result[t]=df
-        except: pass
-    print(f"{len(result)}/{len(tickers)} OK")
-    return result
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DÉCOUVERTES — Presse Finnhub + Yahoo Trending (fusionnés)
+# ═══════════════════════════════════════════════════════════════════════════════
+def decouverte_scan(finnhub_key, groq_key, known_tickers, top_n=5):
+    """Détecte les tickers hors univers connu via Finnhub General News + Yahoo Trending."""
+    candidates = {}  # sym → {"count": int, "articles": [], "source": str}
 
-def radar_scan(static_universe):
-    print("\n  [Radar] Trending Yahoo Finance...", end=" ", flush=True)
+    # ── Presse Finnhub ───────────────────────────────────────────────────────
+    if finnhub_key:
+        print(f"  [Découvertes] Presse Finnhub...", end=" ", flush=True)
+        for category in ["general", "merger"]:
+            try:
+                url = f"https://finnhub.io/api/v1/news?category={category}&token={finnhub_key}"
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    arts = json.loads(r.read())
+                for art in arts[:80]:
+                    for sym in art.get("related","").split(","):
+                        sym = sym.strip().upper()
+                        if (not sym or len(sym)>10 or sym in known_tickers
+                                or not re.match(r'^[A-Z0-9]{1,6}(-[A-Z])?(\.[A-Z]{1,2})?$', sym)):
+                            continue
+                        if sym not in candidates:
+                            candidates[sym] = {"count":0,"articles":[],"source":"📰 Presse"}
+                        candidates[sym]["count"] += 1
+                        candidates[sym]["articles"].append(art)
+            except Exception as e:
+                print(f"ERR {category}: {e}", end=" ", flush=True)
+        print(f"{len(candidates)} via presse", end=" | ", flush=True)
+
+    # ── Yahoo Trending ───────────────────────────────────────────────────────
+    print(f"Yahoo Trending...", end=" ", flush=True)
     trending = get_yahoo_trending()
-    print(f"{len(trending)} tickers")
-    candidates = trending - static_universe
-    candidates = {t for t in candidates if not t.startswith("^")}
-    if not candidates:
-        print("  [Radar] Aucun nouveau ticker.")
-        return {}
-    print(f"  [Radar] Analyse de {len(candidates)} nouveaux tickers...", end=" ", flush=True)
-    results = {}
-    try:
-        raw = yf.download(list(candidates), period="14mo", auto_adjust=True,
-                          group_by="ticker", threads=True, progress=False)
-    except Exception as e:
-        print(f"ERR:{e}"); return {}
-    ok = 0
-    for t in candidates:
+    for sym in trending - known_tickers - set(candidates.keys()):
+        candidates[sym] = {"count":1,"articles":[],"source":"📡 Trending"}
+    print(f"{len(trending)} trending")
+
+    # ── Analyse des candidats ────────────────────────────────────────────────
+    sorted_cands = sorted(candidates.items(), key=lambda x: x[1]["count"], reverse=True)
+    results = []
+    for sym, meta in sorted_cands:
+        if len(results) >= top_n: break
         try:
-            df = raw if len(candidates)==1 else (raw[t] if t in raw.columns.get_level_values(0) else None)
-            if df is None or df.empty or len(df) < 60: continue
-            s = analyze(t, df)
-            if s:
-                results[t] = {"name":t, "trending":True, "articles":[], **s}
-                ok += 1
-        except: pass
-    print(f"{ok} analysés")
-    if results:
-        print(f"  [Radar] News...", end=" ", flush=True)
-        radar_news = get_ticker_news(list(results.keys()))
-        for t in results:
-            entry = radar_news.get(t, {})
-            results[t]["articles"]  = entry.get("articles", []) if isinstance(entry, dict) else entry
-            results[t]["synthesis"] = entry.get("synthesis") if isinstance(entry, dict) else None
-        print(f"{len(radar_news)} avec actualités")
+            df_raw = yf.download(sym, period="14mo", auto_adjust=True,
+                                 progress=False, threads=False)
+            if df_raw is None or len(df_raw) < 60: continue
+            s = analyze(sym, df_raw)
+            if not s: continue
+            raw_arts = meta["articles"][:3]
+            if not raw_arts and finnhub_key:
+                raw_arts = _finnhub_news(sym, finnhub_key, days=5)[:3]
+            arts = [{"headline":a.get("headline",""),"summary":a.get("summary",""),
+                     "source":a.get("source",""),"url":a.get("url","")}
+                    for a in raw_arts if a.get("headline")]
+            synthesis = groq_synthesize(sym, arts, groq_key) if groq_key and arts else None
+            results.append({"ticker":sym,"name":sym,"source":meta["source"],
+                            "mentions":meta["count"],"s":s,
+                            "articles":arts[:2],"synthesis":synthesis})
+        except: continue
     return results
 
-def build_scouting(sig, snp, finnhub_key, groq_key, top_n=3):
-    """Identifie les top mouvements achat/vente du jour avec catalyseur news (effet mouton)."""
-    all_stocks = {**sig, **snp}
-    # Filtre : mouvement 1j suffisant
-    # Score combiné J1 + J2 : confirme la tendance sur 2 jours consécutifs
-    def score_2d(s):
-        return s.get("change_1d", 0) + s.get("change_2d", 0)
-    top_buy  = sorted(all_stocks.items(), key=lambda x: score_2d(x[1]), reverse=True)[:top_n]
-    top_sell = sorted(all_stocks.items(), key=lambda x: score_2d(x[1]))[:top_n]
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SCOUTING
+# ═══════════════════════════════════════════════════════════════════════════════
+def build_scouting(all_sig, finnhub_key, groq_key, top_n=3):
+    """Top mouvements achat/vente sur l'ensemble de l'univers (effet mouton)."""
+    def score_2d(s): return s.get("change_1d",0) + s.get("change_2d",0)
+    top_buy  = sorted(all_sig.items(), key=lambda x: score_2d(x[1]), reverse=True)[:top_n]
+    top_sell = sorted(all_sig.items(), key=lambda x: score_2d(x[1]))[:top_n]
 
     def enrich(entries):
         result = []
         for t, s in entries:
-            # News Finnhub (primaire), yfinance (fallback)
             articles = _finnhub_news(t, finnhub_key, days=3) if finnhub_key else []
             if not articles:
                 try:
-                    raw_yf = yf.Ticker(t).news or []
-                    for item in raw_yf[:3]:
-                        title, publisher = _parse_yf_news_item(item)
+                    for item in (yf.Ticker(t).news or [])[:3]:
+                        title, pub = _parse_yf_news_item(item)
                         if title:
-                            content = item.get("content", {})
-                            url = ""
-                            if content:
-                                cp_link = content.get("canonicalUrl", {})
-                                url = cp_link.get("url", "") if isinstance(cp_link, dict) else ""
-                            articles.append({"headline": title, "summary": "", "source": publisher, "url": url})
-                except Exception:
-                    pass
-            # Synthèse Groq
+                            content = item.get("content",{})
+                            cp_link = content.get("canonicalUrl",{}) if content else {}
+                            url = cp_link.get("url","") if isinstance(cp_link,dict) else ""
+                            articles.append({"headline":title,"summary":"","source":pub,"url":url})
+                except: pass
             synthesis = None
             if groq_key and articles:
-                texts = []
-                for a in articles[:3]:
-                    h = a.get("headline",""); su = a.get("summary","")
-                    if h: texts.append(f"- {h}" + (f" : {su[:150]}" if su else ""))
+                texts = [f"- {a.get('headline','')}" + (f" : {a.get('summary','')[:150]}" if a.get('summary') else "")
+                         for a in articles[:3] if a.get('headline')]
                 if texts:
-                    direction = "hausse" if s["change_1d"] > 0 else "baisse"
-                    vol_txt = f" (volume ×{s['vol_ratio']:.1f} vs moyenne)" if s.get("vol_ratio") and s["vol_ratio"] > 1 else ""
                     c2d = s.get("change_2d", s["change_1d"])
-                    trend_conf = "confirmée sur 2 jours" if (s["change_1d"] > 0) == (c2d > 0) else "non confirmée (J-1 allait dans le sens inverse)"
+                    direction = "hausse" if s["change_1d"]>0 else "baisse"
+                    trend_conf = "confirmée 2j" if (s["change_1d"]>0)==(c2d>0) else "non confirmée (J-1 inverse)"
+                    vol_txt = f" (Vol×{s['vol_ratio']:.1f})" if s.get("vol_ratio") and s["vol_ratio"]>1 else ""
                     prompt = (
-                        f"Tu es analyste financier spécialisé en comportements de marché. "
-                        f"{s['name']} ({t}) : {s['change_1d']:+.1f}% aujourd'hui, {c2d:+.1f}% sur 2 jours ({trend_conf}){vol_txt}. "
-                        f"RSI actuel : {s['rsi']:.0f}. Actualités récentes :\n" + "\n".join(texts) +
-                        f"\n\nEn 2 phrases max, explique ce qui drive cette {direction} et si c'est "
-                        f"un effet mouton (suivi de tendance/momentum) ou un mouvement fondamental. "
-                        f"Sois factuel et précis. Réponds en français."
+                        f"Tu es analyste financier. {s['name']} ({t}) : {s['change_1d']:+.1f}% aujourd'hui, "
+                        f"{c2d:+.1f}% sur 2j ({trend_conf}){vol_txt}. RSI {s['rsi']:.0f}.\n"
+                        f"Actualités :\n" + "\n".join(texts) +
+                        f"\nEn 2 phrases max, explique cette {direction} : effet mouton ou mouvement fondamental ? Réponds en français."
                     )
                     try:
                         from groq import Groq
-                        client = Groq(api_key=groq_key)
-                        resp = client.chat.completions.create(
+                        resp = Groq(api_key=groq_key).chat.completions.create(
                             model="llama-3.3-70b-versatile",
-                            messages=[{"role":"user","content":prompt}],
-                            max_tokens=130,
-                        )
+                            messages=[{"role":"user","content":prompt}], max_tokens=130)
                         synthesis = resp.choices[0].message.content.strip()
                     except Exception as e:
                         print(f" [scout groq ERR: {e}]", end="", flush=True)
-            result.append({"ticker": t, "name": s["name"], "s": s,
-                           "articles": articles[:2], "synthesis": synthesis})
+            result.append({"ticker":t,"name":s["name"],"s":s,
+                           "articles":articles[:2],"synthesis":synthesis})
         return result
 
     print(f"\n  [Scouting] Analyse top mouvements...", end=" ", flush=True)
@@ -485,289 +535,74 @@ def build_scouting(sig, snp, finnhub_key, groq_key, top_n=3):
     print("OK")
     return buys, sells
 
-def scouting_html(buys, sells):
-    def card(item, side):
-        s = item["s"]
-        t = item["ticker"]
-        name = item["name"]
-        col_bg  = "#f0fdf4" if side == "buy" else "#fef2f2"
-        col_bdr = "#16a34a" if side == "buy" else "#dc2626"
-        col_txt = "#166534" if side == "buy" else "#991b1b"
-        arrow   = "▲" if side == "buy" else "▼"
-        pct1d   = s["change_1d"]
-        pct2d   = s.get("change_2d", pct1d)
-        same_dir = (pct1d > 0) == (pct2d > 0)
-        confirm_tag = (
-            f'<span style="color:#16a34a;font-size:11px;font-weight:bold">✔&nbsp;2j</span>&nbsp;'
-            if same_dir else
-            f'<span style="color:#d97706;font-size:11px;font-weight:bold">⚠&nbsp;1j</span>&nbsp;'
-        )
-        vol_tag = (f'<span style="background:#fef9c3;color:#854d0e;border:1px solid #fde047;'
-                   f'padding:1px 6px;border-radius:3px;font-size:10px">Vol×{s["vol_ratio"]:.1f}</span> '
-                   if s.get("vol_ratio") and s["vol_ratio"] >= 1.3 else "")
-        rsi_tag = f'<span style="font-size:11px;color:#6b7280">RSI {s["rsi"]:.0f}</span>'
-
-        # Articles
-        arts_html = ""
-        for a in item["articles"][:2]:
-            h   = a.get("headline","")[:90]
-            url = a.get("url","")
-            src = a.get("source","")
-            kw  = extract_keywords(h)
-            kw_html = " ".join(
-                f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
-                f'padding:1px 4px;border-radius:3px;font-size:10px">{k}</span>' for k in kw[:4]
-            )
-            title_lnk = f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{h}</a>' if url else h
-            arts_html += f'<div style="margin-top:3px;font-size:11px;color:#4b5563">📰 [{src}] {title_lnk}</div>'
-            if kw_html: arts_html += f'<div style="margin-top:2px">{kw_html}</div>'
-
-        synth_html = ""
-        if item["synthesis"]:
-            synth_html = (
-                f'<div style="margin-top:6px;padding:5px 8px;background:{col_bg};'
-                f'border-left:3px solid {col_bdr};border-radius:3px;font-size:11px;color:{col_txt}">'
-                f'🤖 <strong>Analyse :</strong> {item["synthesis"]}</div>'
-            )
-
-        return f"""
-        <tr>
-          <td style="padding:10px 12px;border-bottom:1px solid #f0f0f0">
-            <div>
-              <span style="font-size:18px;font-weight:bold;color:{col_bdr}">{arrow}{abs(pct1d):.1f}%</span>
-              &nbsp;<strong style="font-size:13px">{name}</strong>
-              &nbsp;<span style="color:#6b7280;font-size:12px">({ticker_link(t)})</span>
-            </div>
-            <div style="margin-top:3px;font-size:11px">
-              <span style="color:#6b7280">2j&nbsp;:&nbsp;{pct2d:+.1f}%</span>
-              &nbsp;&nbsp;{confirm_tag}&nbsp;&nbsp;{vol_tag}&nbsp;{rsi_tag}
-            </div>
-            {arts_html}
-            {synth_html}
-          </td>
-        </tr>"""
-
-    buys_rows  = "".join(card(i, "buy")  for i in buys)
-    sells_rows = "".join(card(i, "sell") for i in sells)
-
-    return f"""
-    <div style="margin-bottom:24px;border:2px solid #1e3a5f;border-radius:8px;overflow:hidden">
-      <div style="background:#1e3a5f;color:#fff;padding:10px 16px">
-        <span style="font-size:15px;font-weight:bold">🔭 Scouting — Achat / Vente · Effet mouton</span>
-        <span style="font-size:11px;opacity:0.7;margin-left:8px">Top mouvements du jour · recoupés avec l'actualité</span>
-      </div>
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
-        <div>
-          <div style="background:#dcfce7;padding:6px 12px;font-weight:bold;font-size:12px;color:#166534">
-            🟢 TOP ACHATS — momentum haussier
-          </div>
-          <table style="width:100%;border-collapse:collapse">{buys_rows}</table>
-        </div>
-        <div style="border-left:1px solid #e5e7eb">
-          <div style="background:#fee2e2;padding:6px 12px;font-weight:bold;font-size:12px;color:#991b1b">
-            🔴 TOP VENTES — pression baissière
-          </div>
-          <table style="width:100%;border-collapse:collapse">{sells_rows}</table>
-        </div>
-      </div>
-    </div>"""
-
+# ═══════════════════════════════════════════════════════════════════════════════
+#  RENDU HTML — utilitaires
+# ═══════════════════════════════════════════════════════════════════════════════
 def ticker_url(ticker):
-    """URL Yahoo Finance pour n'importe quel symbole boursier."""
     return f"https://finance.yahoo.com/quote/{ticker}"
 
 def ticker_link(ticker, label=None):
-    """Lien cliquable vers Yahoo Finance."""
     txt = label or ticker
     return f'<a href="{ticker_url(ticker)}" style="color:#1d4ed8;text-decoration:none" target="_blank">{txt}</a>'
-
-def press_scan(finnhub_key, groq_key, known_tickers, top_n=5):
-    """Détecte les tickers les plus mentionnés dans la presse Finnhub (hors univers connu)."""
-    print(f"\n  [Presse] Analyse des mentions Finnhub...", end=" ", flush=True)
-    ticker_count = {}
-    ticker_arts  = {}
-    for category in ["general", "merger"]:
-        try:
-            url = (f"https://finnhub.io/api/v1/news?category={category}"
-                   f"&token={finnhub_key}&minId=0")
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                articles = json.loads(r.read())
-            for art in articles[:80]:
-                related = art.get("related", "")
-                if not related:
-                    continue
-                for sym in related.split(","):
-                    sym = sym.strip().upper()
-                    # Accepte les formats US (1-5 lettres), et les tickers avec suffixe
-                    if not sym or len(sym) > 10:
-                        continue
-                    ticker_count[sym] = ticker_count.get(sym, 0) + 1
-                    ticker_arts.setdefault(sym, []).append(art)
-        except Exception as e:
-            print(f"ERR {category}: {e}", end=" ", flush=True)
-
-    # Filtre : hors univers connu + doit être un format raisonnable
-    candidates = {
-        t: c for t, c in ticker_count.items()
-        if t not in known_tickers and re.match(r'^[A-Z0-9]{1,6}(-[A-Z])?(\.[A-Z]{1,2})?$', t)
-    }
-    top = sorted(candidates.items(), key=lambda x: x[1], reverse=True)[:top_n * 3]
-    print(f"{len(candidates)} candidats → analyse top {min(top_n, len(top))}")
-
-    results = []
-    for sym, mentions in top:
-        if len(results) >= top_n:
-            break
-        try:
-            df_raw = yf.download(sym, period="14mo", auto_adjust=True,
-                                 progress=False, threads=False)
-            if df_raw is None or len(df_raw) < 60:
-                continue
-            s = analyze(sym, df_raw)
-            if not s:
-                continue
-            # Récupère les 2 premiers articles
-            arts_raw = ticker_arts.get(sym, [])[:3]
-            arts = []
-            for a in arts_raw:
-                h = a.get("headline", "")
-                if h:
-                    arts.append({
-                        "headline": h,
-                        "summary":  a.get("summary", ""),
-                        "source":   a.get("source", ""),
-                        "url":      a.get("url", ""),
-                    })
-            synthesis = None
-            if groq_key and arts:
-                synthesis = groq_synthesize(sym, arts, groq_key)
-            results.append({
-                "ticker":   sym,
-                "mentions": mentions,
-                "s":        s,
-                "articles": arts[:2],
-                "synthesis": synthesis,
-            })
-        except Exception:
-            continue
-    return results
-
-def press_html(press_data):
-    if not press_data:
-        return ""
-    rows = ""
-    for item in press_data:
-        t        = item["ticker"]
-        s        = item["s"]
-        mentions = item["mentions"]
-        arts     = item["articles"]
-        synth    = item["synthesis"]
-
-        ind = f'RSI {s["rsi"]:.0f} · {"MACD↑" if s["bull_cross"] else ("MACD+" if s["macd"]>s["signal"] else "MACD-")}'
-        if s.get("above_sma200"): ind += " · ▲SMA200"
-
-        arts_html = ""
-        for a in arts:
-            h   = a.get("headline","")[:90]
-            url = a.get("url","")
-            src = a.get("source","")
-            kw  = extract_keywords(h)
-            kw_html = " ".join(
-                f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
-                f'padding:1px 4px;border-radius:3px;font-size:10px">{k}</span>' for k in kw[:4]
-            )
-            lnk = f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{h}</a>' if url else h
-            arts_html += f'<div style="margin-top:3px;font-size:11px;color:#4b5563">📰 [{src}] {lnk}</div>'
-            if kw_html: arts_html += f'<div style="margin-top:2px">{kw_html}</div>'
-
-        synth_html = ""
-        if synth:
-            synth_html = (
-                f'<div style="margin-top:5px;padding:5px 8px;background:#f5f3ff;'
-                f'border-left:3px solid #7c3aed;border-radius:3px;font-size:11px;color:#5b21b6">'
-                f'🤖 <strong>Synthèse :</strong> {synth}</div>'
-            )
-
-        mention_tag = f'<span style="color:#7c3aed;font-size:11px;font-weight:bold">{mentions}× presse</span>'
-        rows += f"""
-        <tr>
-          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-            <strong>{ticker_link(t)}</strong>
-            &nbsp;{mention_tag}<br>
-            <span style="font-size:12px;color:#555">{ind}</span>
-            {arts_html}
-            {synth_html}
-          </td>
-          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
-            {color_pct(s["change_1d"])}/j<br>
-            <span style="font-size:12px">{color_pct(s["change_1mo"])}/mois</span>
-          </td>
-        </tr>"""
-    return section_html(
-        "📰 Presse — Valeurs en vedette (Finnhub General News)", "#b45309", rows,
-        "Aucune nouvelle valeur détectée dans la presse aujourd'hui."
-    )
 
 def color_pct(v):
     if v > 0: return f'<span style="color:#16a34a">▲{v:.1f}%</span>'
     if v < 0: return f'<span style="color:#dc2626">▼{abs(v):.1f}%</span>'
     return f'{v:.1f}%'
 
+def sr_hint_html(s):
+    """Affiche la distance au prochain support/résistance."""
+    parts = []
+    if s.get("pct_to_res"):
+        parts.append(f'<span style="color:#7c3aed;font-size:10px">Résist.&nbsp;+{s["pct_to_res"]:.1f}%</span>')
+    if s.get("pct_to_sup"):
+        parts.append(f'<span style="color:#0369a1;font-size:10px">Support&nbsp;-{s["pct_to_sup"]:.1f}%</span>')
+    return (' &nbsp;·&nbsp; '.join(parts)) if parts else ""
+
 def news_html(news_entry):
-    """news_entry : dict {"articles": [...], "synthesis": str|None} ou None."""
     if not news_entry: return ""
     html = ""
     synthesis = news_entry.get("synthesis") if isinstance(news_entry, dict) else None
     articles  = news_entry.get("articles", []) if isinstance(news_entry, dict) else news_entry
-
-    # Synthèse Claude en premier
     if synthesis:
-        html += (
-            f'<div style="margin-top:6px;padding:6px 8px;background:#f0fdf4;border-left:3px solid #16a34a;'
-            f'border-radius:3px;font-size:11px;color:#166534">'
-            f'🤖 <strong>Synthèse :</strong> {synthesis}</div>'
-        )
-
-    # Articles sources
+        html += (f'<div style="margin-top:6px;padding:6px 8px;background:#f0fdf4;'
+                 f'border-left:3px solid #16a34a;border-radius:3px;font-size:11px;color:#166534">'
+                 f'🤖 {synthesis}</div>')
     seen = set()
     for item in articles[:2]:
-        src      = item[0]
-        title    = item[1]
-        keywords = item[2] if len(item) > 2 else []
-        url      = item[3] if len(item) > 3 else ""
+        src = item[0]; title = item[1]
+        keywords = item[2] if len(item)>2 else []
+        url = item[3] if len(item)>3 else ""
         if title in seen: continue
         seen.add(title)
         kw_html = " ".join(
             f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
             f'padding:1px 5px;border-radius:3px;font-size:10px">{k}</span>'
-            for k in keywords[:4]
-        )
-        title_html = (
-            f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{title}</a>'
-            if url else title
-        )
+            for k in keywords[:4])
+        title_html = (f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{title}</a>'
+                      if url else title)
         html += f'<div style="margin-top:4px;font-size:11px;color:#4b5563">📰 <em>[{src}]</em> {title_html}</div>'
         if kw_html: html += f'<div style="margin-top:2px">{kw_html}</div>'
     return html
 
-def html_row(name, ticker, s, score_label="", news_map=None):
-    indicators = [f'RSI {s["rsi"]:.0f}']
-    if s["bull_cross"]: indicators.append("MACD↑")
-    elif s["macd"] > s["signal"]: indicators.append("MACD+")
-    else: indicators.append("MACD-")
-    if s["above_sma200"] is True: indicators.append("▲SMA200")
-    if s["vol_ratio"] and s["vol_ratio"] >= 1.5: indicators.append(f'Vol×{s["vol_ratio"]:.1f}')
-    if s["squeeze"]: indicators.append("BB squeeze")
-    ind_html = " · ".join(indicators)
-    score_html = f' <span style="color:#6b7280;font-size:12px">{score_label}</span>' if score_label else ""
+def html_row(name, ticker, s, badge="", news_map=None):
+    ind = [f'RSI {s["rsi"]:.0f}']
+    if s["bull_cross"]: ind.append("MACD↑")
+    elif s["macd"]>s["signal"]: ind.append("MACD+")
+    else: ind.append("MACD-")
+    if s["above_sma200"] is True:  ind.append("▲SMA200")
+    if s.get("vol_ratio") and s["vol_ratio"]>=1.5: ind.append(f'Vol×{s["vol_ratio"]:.1f}')
+    if s.get("squeeze"): ind.append("BB squeeze")
+    ind_html  = " · ".join(ind)
+    badge_html = f' <span style="color:#6b7280;font-size:12px">{badge}</span>' if badge else ""
+    sr_h = sr_hint_html(s)
+    sr_line = f'<div style="margin-top:2px;font-size:11px">{sr_h}</div>' if sr_h else ""
     articles = (news_map or {}).get(ticker, [])
     return f"""
     <tr>
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker_link(ticker)})</span>{score_html}<br>
-        <span style="font-size:12px;color:#555">{ind_html}</span>
+        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker_link(ticker)})</span>{badge_html}<br>
+        <span style="font-size:12px;color:#555">{ind_html}</span>{sr_line}
         {news_html(articles)}
       </td>
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
@@ -776,26 +611,8 @@ def html_row(name, ticker, s, score_label="", news_map=None):
       </td>
     </tr>"""
 
-def radar_rows(radar):
-    rows = ""
-    for t, s in sorted(radar.items(), key=lambda x: x[1]["oversold_score"]+x[1]["trend_score"], reverse=True):
-        tags = '<span style="background:#7c3aed;color:#fff;padding:1px 6px;border-radius:3px;font-size:11px">📡 Trending</span>'
-        rows += f"""
-        <tr>
-          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-            <strong>{ticker_link(t)}</strong> {tags}<br>
-            <span style="font-size:12px;color:#555">RSI {s['rsi']:.0f} · {'MACD↑' if s['bull_cross'] else ('MACD+' if s['macd']>s['signal'] else 'MACD-')} · {'▲SMA200' if s['above_sma200'] else ''}</span>
-            {news_html(s.get('articles',[]))}
-          </td>
-          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
-            {color_pct(s['change_1d'])}/j<br>
-            <span style="font-size:12px">{color_pct(s['change_1mo'])}/mois</span>
-          </td>
-        </tr>"""
-    return rows
-
 def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
-    content = rows_html if rows_html else f'<tr><td colspan="2" style="padding:8px 12px;color:#6b7280">{empty_msg}</td></tr>'
+    content = rows_html or f'<tr><td colspan="2" style="padding:8px 12px;color:#6b7280">{empty_msg}</td></tr>'
     return f"""
     <div style="margin-bottom:24px">
       <div style="background:{color};color:#fff;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:bold">{title}</div>
@@ -804,41 +621,245 @@ def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
       </table>
     </div>"""
 
-def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map, scouting=None, press=None):
+# ═══════════════════════════════════════════════════════════════════════════════
+#  RENDU HTML — sections spécifiques
+# ═══════════════════════════════════════════════════════════════════════════════
+def scouting_html(buys, sells):
+    def card(item, side):
+        s = item["s"]; t = item["ticker"]; name = item["name"]
+        col_bg  = "#f0fdf4" if side=="buy" else "#fef2f2"
+        col_bdr = "#16a34a" if side=="buy" else "#dc2626"
+        col_txt = "#166534" if side=="buy" else "#991b1b"
+        arrow   = "▲" if side=="buy" else "▼"
+        pct1d = s["change_1d"]; pct2d = s.get("change_2d", pct1d)
+        same_dir = (pct1d>0)==(pct2d>0)
+        confirm_tag = (
+            f'<span style="color:#16a34a;font-size:11px;font-weight:bold">✔&nbsp;2j</span>&nbsp;'
+            if same_dir else
+            f'<span style="color:#d97706;font-size:11px;font-weight:bold">⚠&nbsp;1j</span>&nbsp;'
+        )
+        vol_tag = (f'<span style="color:#854d0e;font-size:11px">Vol×{s["vol_ratio"]:.1f}</span>&nbsp;'
+                   if s.get("vol_ratio") and s["vol_ratio"]>=1.3 else "")
+        rsi_tag = f'<span style="font-size:11px;color:#6b7280">RSI {s["rsi"]:.0f}</span>'
+        arts_html = ""
+        for a in item["articles"][:2]:
+            h = a.get("headline","")[:90]; url = a.get("url",""); src = a.get("source","")
+            kw = extract_keywords(h)
+            kw_html = " ".join(
+                f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
+                f'padding:1px 4px;border-radius:3px;font-size:10px">{k}</span>' for k in kw[:4])
+            lnk = f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{h}</a>' if url else h
+            arts_html += f'<div style="margin-top:3px;font-size:11px;color:#4b5563">📰 [{src}] {lnk}</div>'
+            if kw_html: arts_html += f'<div style="margin-top:2px">{kw_html}</div>'
+        synth_html = (
+            f'<div style="margin-top:6px;padding:5px 8px;background:{col_bg};'
+            f'border-left:3px solid {col_bdr};border-radius:3px;font-size:11px;color:{col_txt}">'
+            f'🤖 {item["synthesis"]}</div>' if item["synthesis"] else ""
+        )
+        return f"""
+        <tr><td style="padding:10px 12px;border-bottom:1px solid #f0f0f0">
+          <div>
+            <span style="font-size:18px;font-weight:bold;color:{col_bdr}">{arrow}{abs(pct1d):.1f}%</span>
+            &nbsp;<strong style="font-size:13px">{ticker_link(t, name)}</strong>
+            &nbsp;<span style="color:#6b7280;font-size:12px">({ticker_link(t)})</span>
+          </div>
+          <div style="margin-top:3px;font-size:11px">
+            <span style="color:#6b7280">2j&nbsp;:&nbsp;{pct2d:+.1f}%</span>
+            &nbsp;&nbsp;{confirm_tag}&nbsp;&nbsp;{vol_tag}&nbsp;{rsi_tag}
+          </div>
+          {arts_html}{synth_html}
+        </td></tr>"""
+
+    buys_rows  = "".join(card(i,"buy")  for i in buys)
+    sells_rows = "".join(card(i,"sell") for i in sells)
+    return f"""
+    <div style="margin-bottom:24px;border:2px solid #1e3a5f;border-radius:8px;overflow:hidden">
+      <div style="background:#1e3a5f;color:#fff;padding:10px 16px">
+        <span style="font-size:15px;font-weight:bold">🔭 Scouting — Achat / Vente · Effet mouton</span>
+        <span style="font-size:11px;opacity:0.7;margin-left:8px">Top mouvements · recoupés avec l'actualité</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <tr>
+          <td style="width:50%;vertical-align:top;border-right:1px solid #e5e7eb">
+            <div style="background:#dcfce7;padding:6px 12px;font-weight:bold;font-size:12px;color:#166534">
+              🟢 TOP ACHATS — momentum haussier</div>
+            <table style="width:100%;border-collapse:collapse">{buys_rows}</table>
+          </td>
+          <td style="width:50%;vertical-align:top">
+            <div style="background:#fee2e2;padding:6px 12px;font-weight:bold;font-size:12px;color:#991b1b">
+              🔴 TOP VENTES — pression baissière</div>
+            <table style="width:100%;border-collapse:collapse">{sells_rows}</table>
+          </td>
+        </tr>
+      </table>
+    </div>"""
+
+def decouverte_html(decouvertes):
+    if not decouvertes: return ""
+    rows = ""
+    for item in decouvertes:
+        t = item["ticker"]; s = item["s"]; src = item["source"]
+        cnt = item["mentions"]; arts = item["articles"]; synth = item["synthesis"]
+        ind = (f'RSI {s["rsi"]:.0f} · '
+               + ("MACD↑" if s["bull_cross"] else ("MACD+" if s["macd"]>s["signal"] else "MACD-"))
+               + (f' · ▲SMA200' if s.get("above_sma200") else ""))
+        src_tag = (f'<span style="color:#7c3aed;font-size:11px;font-weight:bold">{src}'
+                   + (f'&nbsp;×{cnt}' if cnt>1 else '') + '</span>')
+        arts_html = ""
+        for a in arts:
+            h = a.get("headline","")[:90]; url = a.get("url",""); sc = a.get("source","")
+            kw = extract_keywords(h)
+            kw_html = " ".join(
+                f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
+                f'padding:1px 4px;border-radius:3px;font-size:10px">{k}</span>' for k in kw[:4])
+            lnk = f'<a href="{url}" style="color:#1d4ed8;text-decoration:none" target="_blank">{h}</a>' if url else h
+            arts_html += f'<div style="margin-top:3px;font-size:11px;color:#4b5563">📰 [{sc}] {lnk}</div>'
+            if kw_html: arts_html += f'<div style="margin-top:2px">{kw_html}</div>'
+        synth_html = (
+            f'<div style="margin-top:5px;padding:5px 8px;background:#f5f3ff;'
+            f'border-left:3px solid #7c3aed;border-radius:3px;font-size:11px;color:#5b21b6">'
+            f'🤖 {synth}</div>' if synth else ""
+        )
+        sr_h = sr_hint_html(s)
+        sr_line = f'<div style="margin-top:2px;font-size:11px">{sr_h}</div>' if sr_h else ""
+        rows += f"""
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
+            <strong>{ticker_link(t)}</strong>&nbsp;{src_tag}<br>
+            <span style="font-size:12px;color:#555">{ind}</span>{sr_line}
+            {arts_html}{synth_html}
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
+            {color_pct(s["change_1d"])}/j<br>
+            <span style="font-size:12px">{color_pct(s["change_1mo"])}/mois</span>
+          </td>
+        </tr>"""
+    return section_html("🔍 Découvertes — Presse & Trending", "#6d28d9", rows,
+                        "Aucune nouvelle valeur détectée aujourd'hui.")
+
+def etf_rows_html(sig_etf, news_map=None):
+    rows = ""; nm = news_map or {}
+    for t, s in sorted(sig_etf.items(), key=lambda x: x[1].get("change_1d",0), reverse=True):
+        idx = ETF_INDEX.get(t,"")
+        idx_badge = (f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
+                     f'padding:1px 6px;border-radius:3px;font-size:10px">{idx}</span>' if idx else "")
+        ind = [f'RSI {s["rsi"]:.0f}']
+        if s["bull_cross"]: ind.append("MACD↑")
+        elif s["macd"]>s["signal"]: ind.append("MACD+")
+        else: ind.append("MACD-")
+        if s.get("above_sma200"): ind.append("▲SMA200")
+        ind_html = " · ".join(ind)
+        rows += f"""
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
+            <strong>{s["name"]}</strong> <span style="color:#6b7280;font-size:12px">({ticker_link(t)})</span>
+            &nbsp;{idx_badge}<br>
+            <span style="font-size:12px;color:#555">{ind_html}</span>
+            {news_html(nm.get(t,[]))}
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
+            {color_pct(s["change_1d"])}/j<br>
+            <span style="font-size:12px">{color_pct(s["change_1mo"])}/mois</span>
+          </td>
+        </tr>"""
+    return rows
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  BUILD HTML PRINCIPAL
+# ═══════════════════════════════════════════════════════════════════════════════
+def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map):
+    nm = news_map or {}
+
+    # ── Indices ──────────────────────────────────────────────────────────────
     idx_rows = ""
     for name, val in indices_data:
         if val:
-            p, c = val
-            col = "#16a34a" if c >= 0 else "#dc2626"
-            arrow = "▲" if c >= 0 else "▼"
-            idx_rows += f'<td style="padding:6px 14px;text-align:center"><div style="font-size:12px;color:#6b7280">{name}</div><div style="font-weight:bold">{p:,.2f}</div><div style="color:{col};font-size:12px">{arrow}{abs(c):.2f}%</div></td>'
+            p, c = val; col = "#16a34a" if c>=0 else "#dc2626"; arrow = "▲" if c>=0 else "▼"
+            idx_rows += (f'<td style="padding:6px 14px;text-align:center">'
+                         f'<div style="font-size:12px;color:#6b7280">{name}</div>'
+                         f'<div style="font-weight:bold">{p:,.2f}</div>'
+                         f'<div style="color:{col};font-size:12px">{arrow}{abs(c):.2f}%</div></td>')
         else:
-            idx_rows += f'<td style="padding:6px 14px;text-align:center"><div style="font-size:12px;color:#6b7280">{name}</div><div style="color:#9ca3af">n/d</div></td>'
+            idx_rows += (f'<td style="padding:6px 14px;text-align:center">'
+                         f'<div style="font-size:12px;color:#6b7280">{name}</div>'
+                         f'<div style="color:#9ca3af">n/d</div></td>')
 
-    nm = news_map or {}
-    ca_rows = "".join(html_row(s["name"],t,s,f'[Score {s["oversold_score"]}/8]',nm) for t,s in ca.items())
-    cb_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in cb.items())
-    cc_rows = "".join(html_row(s["name"],t,s,f'[Trend {s["trend_score"]}/6]',nm) for t,s in cc.items())
-    cd_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in cd.items())
-    ha_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in sorted(ha.items(),key=lambda x:x[1]["oversold_score"],reverse=True))
-    hc_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in sorted(hc.items(),key=lambda x:x[1]["trend_score"],reverse=True))
+    # ── S&R : Cassures + Supports ─────────────────────────────────────────────
+    all_sig = {**sig_eu, **sig_etf, **snp}
+    sr_break = {t:s for t,s in all_sig.items() if s.get("breakout")}
+    sr_supp  = {t:s for t,s in all_sig.items() if s.get("at_support")}
 
-    sq_html = ""
-    if sq:
-        sq_items = "".join(f'<tr><td style="padding:6px 12px;border-bottom:1px solid #f0f0f0"><strong>{s["name"]}</strong> ({ticker_link(t)}) · RSI {s["rsi"]:.0f} · {color_pct(s["change_1d"])}/j</td></tr>' for t,s in list(sq.items())[:8])
-        sq_html = section_html("⚡ Compressions Bollinger — rupture imminente", "#7c3aed", sq_items)
+    sr_break_rows = ""
+    for t,s in sorted(sr_break.items(), key=lambda x: x[1].get("change_1d",0), reverse=True):
+        res_lvl = s["breakout"]
+        badge = f'🚀 +{((s["price"]/res_lvl)-1)*100:.1f}% au-dessus de {res_lvl:.2f}'
+        sr_break_rows += html_row(s["name"], t, s, badge, nm)
 
-    radar_html = ""
-    if radar:
-        r_rows = radar_rows(radar)
-        radar_html = section_html("🛰️ Radar — Nouvelles valeurs détectées (trending)", "#0f766e", r_rows)
+    sr_supp_rows = ""
+    for t,s in sorted(sr_supp.items(), key=lambda x: x[1].get("pct_to_sup",999)):
+        sup_lvl = s["at_support"]
+        badge = f'🛡️ à {s["pct_to_sup"]:.1f}% du support {sup_lvl:.2f}'
+        sr_supp_rows += html_row(s["name"], t, s, badge, nm)
+
+    # ── Europe — signaux ──────────────────────────────────────────────────────
+    eu_buy_s = {t:s for t,s in sig_eu.items() if s["oversold_score"]>=4 and s["above_sma200"] is not False and not s["overbought"]}
+    eu_buy_m = {t:s for t,s in sig_eu.items() if 2<=s["oversold_score"]<4 and s["above_sma200"] is not False and not s["overbought"] and t not in eu_buy_s}
+    eu_buy_all = (dict(sorted(eu_buy_s.items(), key=lambda x:x[1]["oversold_score"], reverse=True))
+                | dict(sorted(eu_buy_m.items(), key=lambda x:x[1]["oversold_score"], reverse=True)[:8]))
+    eu_buy_rows = "".join(
+        html_row(s["name"], t, s,
+                 ("⭐⭐ Fort" if s["oversold_score"]>=4 else "⭐ Modéré") + f' [{s["oversold_score"]}/8]', nm)
+        for t,s in eu_buy_all.items()
+    )
+
+    eu_mom = {t:s for t,s in sig_eu.items() if s["trend_score"]>=4 and s["oversold_score"]<=2 and not s["overbought"]}
+    eu_mom = dict(sorted(eu_mom.items(), key=lambda x:x[1]["trend_score"], reverse=True)[:10])
+    eu_mom_rows = "".join(html_row(s["name"],t,s,f'Trend {s["trend_score"]}/6',nm) for t,s in eu_mom.items())
+
+    eu_ob = dict(sorted({t:s for t,s in sig_eu.items() if s["overbought"]}.items(),
+                        key=lambda x:x[1]["rsi"], reverse=True)[:8])
+    eu_ob_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in eu_ob.items())
+
+    # ── Compressions BB (toutes géographies) ─────────────────────────────────
+    sq = {t:s for t,s in all_sig.items() if s.get("squeeze") and not s["overbought"]}
+    sq_rows = "".join(
+        f'<tr><td style="padding:6px 12px;border-bottom:1px solid #f0f0f0">'
+        f'<strong>{s["name"]}</strong> ({ticker_link(t)}) · RSI {s["rsi"]:.0f} · {color_pct(s["change_1d"])}/j'
+        f'</td></tr>'
+        for t,s in list(sq.items())[:8]
+    ) if sq else ""
+
+    # ── USA + Asie ───────────────────────────────────────────────────────────
+    snp_buy = {t:s for t,s in snp.items() if s["oversold_score"]>=3 and not s["overbought"]}
+    snp_mom = {t:s for t,s in snp.items() if s["trend_score"]>=4 and not s["overbought"] and t not in snp_buy}
+    snp_ob  = dict(sorted({t:s for t,s in snp.items() if s["overbought"]}.items(),
+                           key=lambda x:x[1]["rsi"], reverse=True)[:5])
+
+    def sub_block(label, rows):
+        return (f'<div style="margin:8px 0 4px;font-size:13px;color:#6b7280;padding:0 12px">{label}</div>'
+                f'<table style="width:100%;border-collapse:collapse">{rows}</table>') if rows else ""
+
+    snp_buy_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in sorted(snp_buy.items(),key=lambda x:x[1]["oversold_score"],reverse=True))
+    snp_mom_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in sorted(snp_mom.items(),key=lambda x:x[1]["trend_score"],reverse=True))
+    snp_ob_rows  = "".join(html_row(s["name"],t,s,"",nm) for t,s in snp_ob.items())
+    snp_content  = (sub_block("▶ Signaux achat / rebond", snp_buy_rows)
+                  + sub_block("▶ Momentum haussier", snp_mom_rows)
+                  + sub_block("▶ Surachat", snp_ob_rows))
+    if not snp_content:
+        snp_content = '<div style="padding:8px 12px;color:#6b7280;font-size:13px">Aucun signal notable.</div>'
+
+    n_eu = len(sig_eu); n_etf = len(sig_etf); n_snp = len(snp)
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;background:#f9fafb;padding:20px">
+
   <div style="background:#1e3a5f;color:#fff;padding:18px 24px;border-radius:8px;margin-bottom:20px">
-    <div style="font-size:20px;font-weight:bold">📈 Scan Marché PEA</div>
-    <div style="font-size:13px;opacity:0.8;margin-top:4px">{now.strftime("%A %d/%m/%Y — %H:%M UTC")} · {len(sig)} valeurs PEA · {len(snp)} hors-PEA/Asie</div>
+    <div style="font-size:20px;font-weight:bold">📊 Veille stratégique — Bourse</div>
+    <div style="font-size:13px;opacity:0.8;margin-top:4px">
+      {now.strftime("%A %d/%m/%Y — %H:%M UTC")}
+      &nbsp;·&nbsp;{n_eu} Europe · {n_etf} ETFs · {n_snp} USA+Asie
+    </div>
   </div>
 
   <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:20px;overflow-x:auto">
@@ -847,26 +868,29 @@ def build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, n
   </div>
 
   {scouting_html(scouting[0], scouting[1]) if scouting else ""}
-  {press_html(press) if press else ""}
-  {radar_html}
-  {section_html("🟢 A — Signaux d'achat forts (PEA)", "#16a34a", ca_rows, "Aucun signal fort aujourd'hui.")}
-  {section_html("🟡 B — À surveiller", "#d97706", cb_rows, "Aucune valeur en zone de surveillance.")}
-  {section_html("🔵 C — Tendance haussière confirmée", "#2563eb", cc_rows, "Aucune tendance forte.")}
-  {section_html("🔴 D — Surachat — prudence", "#dc2626", cd_rows, "Aucune valeur en surachat.")}
-  {sq_html}
+  {decouverte_html(decouvertes)}
+  {section_html("🚀 Cassures de résistance — signal achat", "#0f766e", sr_break_rows, "Aucune cassure détectée aujourd'hui.") if sr_break_rows else ""}
+  {section_html("🛡️ Rebonds sur support — à surveiller", "#0369a1", sr_supp_rows, "Aucun rebond sur support détecté.") if sr_supp_rows else ""}
+  {section_html("🟢 Europe — Signaux d'achat &nbsp;<span style='font-size:12px;font-weight:normal'>(⭐⭐ Fort · ⭐ Modéré)</span>", "#16a34a", eu_buy_rows, "Aucun signal d'achat détecté aujourd'hui.")}
+  {section_html("📈 Europe — Momentum haussier confirmé", "#2563eb", eu_mom_rows, "Aucune tendance forte.")}
+  {section_html("🔴 Europe — Surachat — prudence", "#dc2626", eu_ob_rows, "Aucune valeur en surachat.") if eu_ob_rows else ""}
+  {section_html("⚡ Compressions Bollinger — rupture imminente", "#7c3aed", sq_rows, "Aucune compression détectée.") if sq_rows else ""}
 
   <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:20px">
-    <div style="font-weight:bold;margin-bottom:10px;color:#374151">Hors PEA — CTO (USA + Asie)</div>
-    {'<div style="margin-bottom:6px;font-size:13px;color:#6b7280">▶ Signaux achat / rebond</div><table style="width:100%;border-collapse:collapse">' + ha_rows + '</table>' if ha_rows else ''}
-    {'<div style="margin:10px 0 6px;font-size:13px;color:#6b7280">▶ Tendances haussières</div><table style="width:100%;border-collapse:collapse">' + hc_rows + '</table>' if hc_rows else ''}
-    {'<div style="color:#6b7280;font-size:13px">Aucun signal notable hors-PEA.</div>' if not ha_rows and not hc_rows else ''}
+    <div style="font-weight:bold;margin-bottom:6px;color:#374151">🌍 USA + Asie</div>
+    {snp_content}
   </div>
 
+  {section_html("📦 ETFs — Exposition mondiale", "#0891b2", etf_rows_html(sig_etf, nm), "Aucune donnée ETF.")}
+
   <div style="text-align:center;font-size:11px;color:#9ca3af;margin-top:16px">
-    Généré automatiquement — données Yahoo Finance · Usage personnel uniquement
+    Généré automatiquement · données Yahoo Finance &amp; Finnhub · Usage personnel uniquement
   </div>
 </body></html>"""
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  EMAIL
+# ═══════════════════════════════════════════════════════════════════════════════
 def send_email(html_body, now):
     gmail_user = os.environ.get("GMAIL_USER","")
     gmail_pwd  = os.environ.get("GMAIL_APP_PASSWORD","")
@@ -875,9 +899,8 @@ def send_email(html_body, now):
         print("  [email] GMAIL_USER ou GMAIL_APP_PASSWORD non défini — email ignoré.")
         return
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"📈 Scan PEA — {now.strftime('%d/%m/%Y')}"
-    msg["From"]    = gmail_user
-    msg["To"]      = recipient
+    msg["Subject"] = f"📊 Veille stratégique Bourse — {now.strftime('%d/%m/%Y')}"
+    msg["From"] = gmail_user; msg["To"] = recipient
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
@@ -887,34 +910,42 @@ def send_email(html_body, now):
     except Exception as e:
         print(f"  [email] Erreur : {e}")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CONSOLE
+# ═══════════════════════════════════════════════════════════════════════════════
 def fmts(s):
     parts = [f"RSI {s['rsi']:.0f}"]
-    if s["bull_cross"]: parts.append("MACD↑ croisement haussier")
-    elif s["macd"]>s["signal"]: parts.append("MACD > signal")
-    else: parts.append("MACD < signal")
-    if s["above_sma200"] is True: parts.append("▲SMA200")
+    if s["bull_cross"]: parts.append("MACD↑")
+    elif s["macd"]>s["signal"]: parts.append("MACD+")
+    else: parts.append("MACD-")
+    if s["above_sma200"] is True:  parts.append("▲SMA200")
     elif s["above_sma200"] is False: parts.append("▼SMA200")
-    if s["vol_ratio"] and s["vol_ratio"]>=1.5: parts.append(f"Vol×{s['vol_ratio']:.1f}")
-    if s["squeeze"]: parts.append("BB squeeze")
+    if s.get("vol_ratio") and s["vol_ratio"]>=1.5: parts.append(f"Vol×{s['vol_ratio']:.1f}")
+    if s.get("squeeze"):    parts.append("BB squeeze")
+    if s.get("breakout"):   parts.append(f"🚀 Cassure {s['breakout']:.2f}")
+    if s.get("at_support"): parts.append(f"🛡️ Support {s['at_support']:.2f}")
     return " | ".join(parts)
 
 def fmtp(s): return f"{s['change_1d']:+.1f}%/j  {s['change_1mo']:+.1f}%/mois"
-
-W=70
+W = 70
 def sec(title, c="─"): print(); print(c*W); print(f"  {title}"); print(c*W)
-def row(name, ticker, s, extra=""):
+def row_con(name, ticker, s, extra=""):
     print(f"  {(name+' ('+ticker+')'):<44} {fmtp(s)}")
     print(f"    {fmts(s)}")
     if extra: print(f"    {extra}")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
 def main():
     now = datetime.now(timezone.utc)
+    n_total = len(EU_STOCKS_MAP) + len(EU_ETFS) + len(NON_PEA)
     print("="*W)
-    print(f"  SCAN OPPORTUNITÉS MARCHÉ — {now.strftime('%A %d/%m/%Y — %H:%M UTC')}")
-    print(f"  Univers : CAC40 + DAX + EU + ETFs PEA + Hors-PEA/Asie ({sum(map(len,[CAC40,DAX,OTHER_EU,PEA_ETFS,NON_PEA]))} valeurs)")
+    print(f"  VEILLE STRATÉGIQUE BOURSE — {now.strftime('%A %d/%m/%Y — %H:%M UTC')}")
+    print(f"  Univers : {len(EU_STOCKS_MAP)} Europe · {len(EU_ETFS)} ETFs · {len(NON_PEA)} USA+Asie = {n_total} valeurs")
     print("="*W)
 
-    sec("CONTEXTE INDICES", "─")
+    sec("INDICES", "─")
     idx_values = get_all_indices(INDICES)
     indices_data = []
     for t, n in INDICES.items():
@@ -927,99 +958,96 @@ def main():
             print(f"  {n:<30} {'n/d':>12}")
 
     print()
-    all_pea = {**CAC40,**DAX,**OTHER_EU,**PEA_ETFS}
-    dpea  = dl(list(CAC40.keys()),    label="CAC 40")
-    ddax  = dl(list(DAX.keys()),      label="DAX")
-    deu   = dl(list(OTHER_EU.keys()), label="Autres EU")
-    detf  = dl(list(PEA_ETFS.keys()), label="ETFs PEA")
-    dnpea = dl(list(NON_PEA.keys()),  label="Hors-PEA/Asie")
-    all_data = {**dpea,**ddax,**deu,**detf}
+    deu  = dl(list(EU_STOCKS_MAP.keys()), label="Europe (actions)")
+    detf = dl(list(EU_ETFS.keys()),       label="ETFs")
+    dsnp = dl(list(NON_PEA.keys()),       label="USA + Asie")
 
-    sig, snp = {}, {}
-    for t, df in all_data.items():
+    sig_eu, sig_etf, snp = {}, {}, {}
+    for t, df in deu.items():
         s = analyze(t, df)
-        if s: sig[t] = {"name": all_pea.get(t,t), **s}
-    for t, df in dnpea.items():
+        if s: sig_eu[t]  = {"name": EU_STOCKS_MAP.get(t,t), **s}
+    for t, df in detf.items():
         s = analyze(t, df)
-        if s: snp[t] = {"name": NON_PEA.get(t,t), **s}
+        if s: sig_etf[t] = {"name": EU_ETFS.get(t,t), **s}
+    for t, df in dsnp.items():
+        s = analyze(t, df)
+        if s: snp[t]     = {"name": NON_PEA.get(t,t), **s}
 
-    ca = {t:s for t,s in sig.items() if s["oversold_score"]>=4 and s["above_sma200"] is not False and not s["overbought"]}
-    ca = dict(sorted(ca.items(), key=lambda x: x[1]["oversold_score"], reverse=True))
-    sec("A. SIGNAUX D'ACHAT — convergence multi-indicateurs (éligibles PEA)","=")
-    if ca:
-        for t,s in ca.items(): row(s["name"],t,s,f"[Score: {s['oversold_score']}/8]")
-    else: print("  Aucun signal fort détecté aujourd'hui.")
+    all_sig = {**sig_eu, **sig_etf, **snp}
 
-    cb = {t:s for t,s in sig.items() if 2<=s["oversold_score"]<4 and s["above_sma200"] is not False and not s["overbought"] and t not in ca}
-    cb = dict(sorted(cb.items(), key=lambda x: x[1]["oversold_score"], reverse=True)[:12])
-    sec("B. À SURVEILLER — RSI en zone de retournement ou MACD s'amorce","─")
-    if cb:
-        for t,s in cb.items(): row(s["name"],t,s)
-    else: print("  Aucune valeur en zone de surveillance.")
+    # ── S&R ─────────────────────────────────────────────────────────────────
+    sr_break = {t:s for t,s in all_sig.items() if s.get("breakout")}
+    sr_supp  = {t:s for t,s in all_sig.items() if s.get("at_support")}
+    if sr_break:
+        sec("🚀 CASSURES DE RÉSISTANCE","=")
+        for t,s in sorted(sr_break.items(), key=lambda x:x[1].get("change_1d",0), reverse=True):
+            row_con(s["name"],t,s,f"Cassure {s['breakout']:.2f}")
+    if sr_supp:
+        sec("🛡️ REBONDS SUR SUPPORT","─")
+        for t,s in sorted(sr_supp.items(), key=lambda x:x[1].get("pct_to_sup",999)):
+            row_con(s["name"],t,s,f"Support {s['at_support']:.2f} ({s['pct_to_sup']:.1f}% au-dessus)")
 
-    cc = {t:s for t,s in sig.items() if s["trend_score"]>=4 and s["oversold_score"]<=2 and not s["overbought"]}
-    cc = dict(sorted(cc.items(), key=lambda x: x[1]["trend_score"], reverse=True)[:10])
-    sec("C. TENDANCE HAUSSIÈRE CONFIRMÉE — momentum solide","─")
-    if cc:
-        for t,s in cc.items(): row(s["name"],t,s,f"[Trend: {s['trend_score']}/6]")
-    else: print("  Aucune valeur en tendance forte.")
+    # ── Europe ───────────────────────────────────────────────────────────────
+    eu_buy = {t:s for t,s in sig_eu.items() if s["oversold_score"]>=2 and s["above_sma200"] is not False and not s["overbought"]}
+    eu_buy = dict(sorted(eu_buy.items(), key=lambda x:x[1]["oversold_score"], reverse=True))
+    sec("EUROPE — SIGNAUX D'ACHAT","=")
+    if eu_buy:
+        for t,s in eu_buy.items():
+            row_con(s["name"],t,s,("⭐⭐ Fort" if s["oversold_score"]>=4 else "⭐  Modéré") + f" [{s['oversold_score']}/8]")
+    else: print("  Aucun signal d'achat détecté.")
 
-    cd = {t:s for t,s in sig.items() if s["overbought"]}
-    cd = dict(sorted(cd.items(), key=lambda x: x[1]["rsi"], reverse=True)[:8])
-    sec("D. SURACHAT — prudence / prise de bénéfices","─")
-    if cd:
-        for t,s in cd.items(): row(s["name"],t,s)
-    else: print("  Aucune valeur en surachat significatif.")
+    eu_mom = {t:s for t,s in sig_eu.items() if s["trend_score"]>=4 and s["oversold_score"]<=2 and not s["overbought"]}
+    sec("EUROPE — MOMENTUM HAUSSIER","─")
+    if eu_mom:
+        for t,s in dict(sorted(eu_mom.items(), key=lambda x:x[1]["trend_score"],reverse=True)[:10]).items():
+            row_con(s["name"],t,s,f"Trend {s['trend_score']}/6")
+    else: print("  Aucune tendance forte.")
 
-    sq = {t:s for t,s in sig.items() if s.get("squeeze") and not s["overbought"]}
-    if sq:
-        sec("⚡ COMPRESSIONS BOLLINGER — rupture imminente","─")
-        for t,s in list(sq.items())[:8]:
-            print(f"  {s['name']:<38} ({t})  RSI {s['rsi']:.0f}  {fmtp(s)}")
+    # ── USA + Asie ───────────────────────────────────────────────────────────
+    snp_buy = {t:s for t,s in snp.items() if s["oversold_score"]>=3 and not s["overbought"]}
+    snp_mom = {t:s for t,s in snp.items() if s["trend_score"]>=4 and not s["overbought"] and t not in snp_buy}
+    sec("USA + ASIE","=")
+    if snp_buy:
+        print("\n  ▶ Signaux achat / rebond :")
+        for t,s in sorted(snp_buy.items(),key=lambda x:x[1]["oversold_score"],reverse=True): row_con(s["name"],t,s)
+    if snp_mom:
+        print("\n  ▶ Momentum haussier :")
+        for t,s in sorted(snp_mom.items(),key=lambda x:x[1]["trend_score"],reverse=True): row_con(s["name"],t,s)
+    if not snp_buy and not snp_mom: print("  Aucun signal notable.")
 
-    sec("HORS PEA — Compte-titres ordinaire uniquement","=")
-    ha = {t:s for t,s in snp.items() if s["oversold_score"]>=3 and not s["overbought"]}
-    hc = {t:s for t,s in snp.items() if s["trend_score"]>=4 and not s["overbought"] and t not in ha}
-    if ha:
-        print("\n  ▶ Signaux d'achat / rebond :")
-        for t,s in sorted(ha.items(),key=lambda x:x[1]["oversold_score"],reverse=True): row(s["name"],t,s)
-    if hc:
-        print("\n  ▶ Tendances haussières :")
-        for t,s in sorted(hc.items(),key=lambda x:x[1]["trend_score"],reverse=True): row(s["name"],t,s)
-    if not ha and not hc: print("  Aucun signal notable hors-PEA.")
-
+    # ── Résumé ───────────────────────────────────────────────────────────────
     sec("RÉSUMÉ","=")
-    total_ok = len(sig) + len(snp)
-    total_uni = sum(map(len, [CAC40, DAX, OTHER_EU, PEA_ETFS, NON_PEA]))
-    echecs = total_uni - total_ok
-    print(f"  Valeurs analysées : {len(sig)} PEA + {len(snp)} hors-PEA/Asie = {total_ok}"
-          + (f" ({echecs} échec(s) téléchargement)" if echecs else ""))
-    print(f"  A (achat fort) : {len(ca)}  |  B (surveiller) : {len(cb)}  |  C (tendance) : {len(cc)}  |  D (surachat) : {len(cd)}")
-    print(f"  Compressions BB : {len(sq)}")
+    total_ok = len(sig_eu)+len(sig_etf)+len(snp)
+    echecs = n_total - total_ok
+    sq = {t:s for t,s in all_sig.items() if s.get("squeeze") and not s["overbought"]}
+    eu_ob = {t:s for t,s in sig_eu.items() if s["overbought"]}
+    print(f"  Analysées : {len(sig_eu)} Europe · {len(sig_etf)} ETFs · {len(snp)} USA+Asie = {total_ok}"
+          + (f" ({echecs} échec(s))" if echecs else ""))
+    print(f"  Achat EU : {len(eu_buy)} · Momentum EU : {len(eu_mom)} · Surachat EU : {len(eu_ob)}")
+    print(f"  Cassures résistance : {len(sr_break)} · Rebonds support : {len(sr_supp)} · BB squeeze : {len(sq)}")
     print("="*W)
 
-    # News yfinance pour les valeurs signalées
-    signal_tickers = list(set(list(ca)+list(cb)+list(cc)+list(ha)+list(hc)))
-    print(f"\n  [News] Récupération pour {len(signal_tickers)} valeurs...", end=" ", flush=True)
+    # ── News ─────────────────────────────────────────────────────────────────
+    signal_tickers = list(set(
+        list(eu_buy) + list(eu_mom) + list(sr_break) + list(sr_supp)
+        + list(snp_buy) + list(snp_mom)
+    ))
+    print(f"\n  [News] {len(signal_tickers)} valeurs...", end=" ", flush=True)
     news_map = get_ticker_news(signal_tickers)
     print(f"{len(news_map)} avec actualités")
 
-    # Scouting — top mouvements du jour
-    finnhub_key = os.environ.get("FINNHUB_KEY", "")
-    groq_key    = os.environ.get("GROQ_KEY", "")
-    scouting = build_scouting(sig, snp, finnhub_key, groq_key)
+    # ── Scouting ─────────────────────────────────────────────────────────────
+    finnhub_key = os.environ.get("FINNHUB_KEY","")
+    groq_key    = os.environ.get("GROQ_KEY","")
+    scouting = build_scouting(all_sig, finnhub_key, groq_key)
 
-    # Presse — valeurs mentionnées dans Finnhub General News (hors univers connu)
-    static_universe = set({**CAC40,**DAX,**OTHER_EU,**PEA_ETFS,**NON_PEA}.keys())
-    press = []
-    if finnhub_key:
-        press = press_scan(finnhub_key, groq_key, static_universe, top_n=5)
-        print(f"  [Presse] {len(press)} valeurs retenues")
+    # ── Découvertes ───────────────────────────────────────────────────────────
+    known = set(EU_STOCKS_MAP) | set(EU_ETFS) | set(NON_PEA)
+    decouvertes = decouverte_scan(finnhub_key, groq_key, known, top_n=5)
+    print(f"  [Découvertes] {len(decouvertes)} valeurs retenues")
 
-    # Radar trending
-    radar = radar_scan(static_universe)
-
-    html = build_html(now, indices_data, ca, cb, cc, cd, sq, ha, hc, sig, snp, radar, news_map, scouting, press)
+    # ── Email ─────────────────────────────────────────────────────────────────
+    html = build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map)
     send_email(html, now)
 
 if __name__ == "__main__":
