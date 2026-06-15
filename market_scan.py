@@ -393,8 +393,10 @@ def analyze(ticker, df):
         a50  = cp>cs50  if cs50  else None
         a200 = cp>cs200 if cs200 else None
         c1d  = float((close.iloc[-1]/close.iloc[-2]-1)*100)  if len(close)>=2  else 0
-        c2d  = float((close.iloc[-1]/close.iloc[-3]-1)*100)  if len(close)>=3  else c1d
+        c5d  = float((close.iloc[-1]/close.iloc[-6]-1)*100)  if len(close)>=6  else c1d
         c1m  = float((close.iloc[-1]/close.iloc[-22]-1)*100) if len(close)>=22 else 0
+        # Pente RSI sur 3 jours : hausse = dynamique en cours, baisse = essoufflement
+        rsi_slope = float(r.iloc[-1] - r.iloc[-4]) if len(r)>=4 else 0.0
         os = 0
         if cr<25: os+=3
         elif cr<35: os+=2
@@ -414,7 +416,8 @@ def analyze(ticker, df):
                 "bull_cross":bc,"above_sma20":a20,"above_sma50":a50,"above_sma200":a200,
                 "vol_ratio":vr,"squeeze":squeeze,"pct_b":cpb,
                 "oversold_score":os,"trend_score":ts,"overbought":cr>72,
-                "price":cp,"change_1d":c1d,"change_2d":c2d,"change_1mo":c1m,
+                "price":cp,"change_1d":c1d,"change_5d":c5d,"change_1mo":c1m,
+                "rsi_slope":rsi_slope,
                 **sr}
     except: return None
 
@@ -484,7 +487,7 @@ def decouverte_scan(finnhub_key, groq_key, known_tickers, top_n=5):
 # ═══════════════════════════════════════════════════════════════════════════════
 def build_scouting(all_sig, finnhub_key, groq_key, top_n=3):
     """Top mouvements achat/vente sur l'ensemble de l'univers (effet mouton)."""
-    def score_2d(s): return s.get("change_1d",0) + s.get("change_2d",0)
+    def score_2d(s): return s.get("change_1d",0) + s.get("change_5d",0)
     top_buy  = sorted(all_sig.items(), key=lambda x: score_2d(x[1]), reverse=True)[:top_n]
     top_sell = sorted(all_sig.items(), key=lambda x: score_2d(x[1]))[:top_n]
 
@@ -509,11 +512,14 @@ def build_scouting(all_sig, finnhub_key, groq_key, top_n=3):
                 if texts:
                     c2d = s.get("change_2d", s["change_1d"])
                     direction = "hausse" if s["change_1d"]>0 else "baisse"
-                    trend_conf = "confirmée 2j" if (s["change_1d"]>0)==(c2d>0) else "non confirmée (J-1 inverse)"
+                    c5d = s.get("change_5d", s["change_1d"])
+                    trend_conf = "confirmée 5j" if (s["change_1d"]>0)==(c5d>0) else "non confirmée (5j inverse)"
                     vol_txt = f" (Vol×{s['vol_ratio']:.1f})" if s.get("vol_ratio") and s["vol_ratio"]>1 else ""
+                    rsi_sl = s.get("rsi_slope", 0)
+                    rsi_txt = f", RSI en {'hausse' if rsi_sl>0 else 'baisse'} ({rsi_sl:+.1f} sur 3j)"
                     prompt = (
                         f"Tu es analyste financier. {s['name']} ({t}) : {s['change_1d']:+.1f}% aujourd'hui, "
-                        f"{c2d:+.1f}% sur 2j ({trend_conf}){vol_txt}. RSI {s['rsi']:.0f}.\n"
+                        f"{c5d:+.1f}% sur 5j ({trend_conf}){vol_txt}{rsi_txt}. RSI {s['rsi']:.0f}.\n"
                         f"Actualités :\n" + "\n".join(texts) +
                         f"\nEn 2 phrases max, explique cette {direction} : effet mouton ou mouvement fondamental ? Réponds en français."
                     )
@@ -631,16 +637,25 @@ def scouting_html(buys, sells):
         col_bdr = "#16a34a" if side=="buy" else "#dc2626"
         col_txt = "#166534" if side=="buy" else "#991b1b"
         arrow   = "▲" if side=="buy" else "▼"
-        pct1d = s["change_1d"]; pct2d = s.get("change_2d", pct1d)
-        same_dir = (pct1d>0)==(pct2d>0)
-        confirm_tag = (
-            f'<span style="color:#16a34a;font-size:11px;font-weight:bold">✔&nbsp;2j</span>&nbsp;'
-            if same_dir else
-            f'<span style="color:#d97706;font-size:11px;font-weight:bold">⚠&nbsp;1j</span>&nbsp;'
-        )
+        pct1d = s["change_1d"]; pct5d = s.get("change_5d", pct1d)
+        rsi_slope = s.get("rsi_slope", 0)
+        vol_ok = s.get("vol_ratio") and s["vol_ratio"] >= 1.2
+        # Confirmation forte : tendance 5j cohérente + volume + RSI en hausse
+        n_confirm = sum([
+            (pct1d>0)==(pct5d>0),   # 5j dans le même sens
+            bool(vol_ok),           # volume au-dessus de la moyenne
+            (pct1d>0)==(rsi_slope>0),  # RSI en phase
+        ])
+        if n_confirm == 3:
+            confirm_tag = f'<span style="color:#16a34a;font-size:11px;font-weight:bold">✔✔&nbsp;5j</span>&nbsp;'
+        elif n_confirm == 2:
+            confirm_tag = f'<span style="color:#16a34a;font-size:11px;font-weight:bold">✔&nbsp;5j</span>&nbsp;'
+        else:
+            confirm_tag = f'<span style="color:#d97706;font-size:11px;font-weight:bold">⚠&nbsp;5j</span>&nbsp;'
         vol_tag = (f'<span style="color:#854d0e;font-size:11px">Vol×{s["vol_ratio"]:.1f}</span>&nbsp;'
-                   if s.get("vol_ratio") and s["vol_ratio"]>=1.3 else "")
-        rsi_tag = f'<span style="font-size:11px;color:#6b7280">RSI {s["rsi"]:.0f}</span>'
+                   if vol_ok else "")
+        rsi_dir = "↑" if rsi_slope > 0 else ("↓" if rsi_slope < 0 else "→")
+        rsi_tag = f'<span style="font-size:11px;color:#6b7280">RSI {s["rsi"]:.0f}{rsi_dir}</span>'
         arts_html = ""
         for a in item["articles"][:2]:
             h = a.get("headline","")[:90]; url = a.get("url",""); src = a.get("source","")
@@ -664,7 +679,7 @@ def scouting_html(buys, sells):
             &nbsp;<span style="color:#6b7280;font-size:12px">({ticker_link(t)})</span>
           </div>
           <div style="margin-top:3px;font-size:11px">
-            <span style="color:#6b7280">2j&nbsp;:&nbsp;{pct2d:+.1f}%</span>
+            <span style="color:#6b7280">5j&nbsp;:&nbsp;{pct5d:+.1f}%</span>
             &nbsp;&nbsp;{confirm_tag}&nbsp;&nbsp;{vol_tag}&nbsp;{rsi_tag}
           </div>
           {arts_html}{synth_html}
