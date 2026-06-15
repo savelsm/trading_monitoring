@@ -1055,7 +1055,7 @@ def main():
     finnhub_key = os.environ.get("FINNHUB_KEY","")
     groq_key    = os.environ.get("GROQ_KEY","")
     scouting = build_scouting(all_sig, finnhub_key, groq_key)
-
+    print(f"  [Scouting] Achats : {[i['ticker'] for i in scouting[0]]} | Ventes : {[i['ticker'] for i in scouting[1]]}")
     # ── Découvertes ───────────────────────────────────────────────────────────
     known = set(EU_STOCKS_MAP) | set(EU_ETFS) | set(NON_PEA)
     decouvertes = decouverte_scan(finnhub_key, groq_key, known, top_n=5)
