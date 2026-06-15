@@ -166,6 +166,7 @@ def _parse_yf_news_item(item):
     return title.strip(), publisher.strip()
 
 def groq_synthesize(ticker_name, articles, groq_key, prompt_override=None):
+    """Synthèse individuelle (scouting / découvertes). Utilise llama-3.1-8b-instant (500K TPD)."""
     try:
         from groq import Groq
     except ImportError:
@@ -178,32 +179,83 @@ def groq_synthesize(ticker_name, articles, groq_key, prompt_override=None):
     prompt = prompt_override or (
         f"Tu es analyste financier. Voici des articles récents sur {ticker_name} :\n\n"
         + "\n".join(texts)
-        + "\n\nEn 2 phrases maximum, explique la tendance actuelle et pourquoi ce titre "
-        "est potentiellement intéressant. Sois factuel et concis. Réponds en français."
+        + "\n\nEn 1-2 phrases max, explique la tendance actuelle. Sois factuel et concis. Réponds en français."
     )
     try:
         client = Groq(api_key=groq_key)
         resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=120,
+            max_tokens=100,
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
         print(f" [groq ERR: {e}]", end="", flush=True)
         return None
 
+def groq_batch_synthesize(ticker_sources: dict, groq_key: str) -> dict:
+    """Synthétise N tickers en un seul appel Groq (économie de tokens ~10×).
+    ticker_sources: {ticker: [{"headline":..., "summary":...}, ...]}
+    Retourne: {ticker: "texte synthèse"}
+    """
+    if not ticker_sources or not groq_key:
+        return {}
+    try:
+        from groq import Groq
+    except ImportError:
+        return {}
+    lines = []
+    tickers_ordered = list(ticker_sources.keys())
+    for t in tickers_ordered:
+        arts = ticker_sources[t][:2]
+        texts = []
+        for a in arts:
+            h = a.get("headline","") if isinstance(a, dict) else (a[1] if len(a)>1 else "")
+            su = a.get("summary","") if isinstance(a, dict) else ""
+            if h: texts.append(h[:90] + (f" — {su[:60]}" if su else ""))
+        if texts:
+            lines.append(f"[{t}] {' | '.join(texts)}")
+    if not lines:
+        return {}
+    prompt = (
+        "Tu es analyste financier. Pour chaque ticker ci-dessous, rédige UNE phrase (15 mots max) "
+        "résumant l'actualité récente, en français. Réponds ligne par ligne sous la forme exacte :\n"
+        "[TICKER] phrase de synthèse\n\nTickers :\n" + "\n".join(lines)
+    )
+    try:
+        resp = Groq(api_key=groq_key).chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=min(40 * len(lines), 2000),
+        )
+        result = resp.choices[0].message.content.strip()
+        syntheses = {}
+        for line in result.split("\n"):
+            line = line.strip()
+            if line.startswith("[") and "]" in line:
+                t_end = line.index("]")
+                t = line[1:t_end].strip()
+                text = line[t_end+1:].strip(" :-")
+                if t and text and t in ticker_sources:
+                    syntheses[t] = text
+        return syntheses
+    except Exception as e:
+        print(f" [batch ERR: {e}]", end="", flush=True)
+        return {}
+
 def get_ticker_news(tickers, max_per_ticker=3, synthesize_for=None):
-    """Récupère les news. synthesize_for : set de tickers prioritaires pour la synthèse Groq.
-    Si None, synthétise tout (attention aux rate limits). Si set vide, aucune synthèse."""
+    """Récupère les news puis synthétise en un seul appel Groq batch (économie ~10× de tokens).
+    synthesize_for : set de tickers prioritaires pour la synthèse. None = tous, set vide = aucun."""
     finnhub_key = os.environ.get("FINNHUB_KEY", "")
     groq_key    = os.environ.get("GROQ_KEY", "")
     sources = []
     if finnhub_key: sources.append("Finnhub")
-    if groq_key:    sources.append("Groq")
+    if groq_key:    sources.append("Groq batch")
     if not finnhub_key: sources.append("yfinance")
     print(f"    [news] Sources : {', '.join(sources)}", end=" ", flush=True)
     news_map = {}
+    to_synthesize = {}  # ticker -> list of raw article dicts pour le batch Groq
+
     for t in tickers:
         entries = []; raw_finnhub = []
         if finnhub_key:
@@ -222,13 +274,23 @@ def get_ticker_news(tickers, max_per_ticker=3, synthesize_for=None):
                         entries.append((f"{sentiment_icon(title)} {pub}",
                                         title[:95], extract_keywords(title), ""))
             except: pass
-        synthesis = None
-        do_synth = (synthesize_for is None) or (t in synthesize_for)
+        if entries or raw_finnhub:
+            news_map[t] = {"articles": entries, "synthesis": None}
+        do_synth = (synthesize_for is None) or (t in (synthesize_for or set()))
         if groq_key and do_synth and (raw_finnhub or entries):
-            src = raw_finnhub if raw_finnhub else [{"headline":e[1],"summary":""} for e in entries]
-            synthesis = groq_synthesize(t, src, groq_key)
-        if entries or synthesis:
-            news_map[t] = {"articles": entries, "synthesis": synthesis}
+            src_list = raw_finnhub if raw_finnhub else [{"headline": e[1], "summary": ""} for e in entries]
+            to_synthesize[t] = src_list
+
+    # Appel batch unique → N synthèses en 1 seul call Groq
+    if to_synthesize and groq_key:
+        print(f" [{len(to_synthesize)} synthèses batch...]", end=" ", flush=True)
+        syntheses = groq_batch_synthesize(to_synthesize, groq_key)
+        for t, synth in syntheses.items():
+            if t in news_map:
+                news_map[t]["synthesis"] = synth
+            else:
+                news_map[t] = {"articles": [], "synthesis": synth}
+
     return news_map
 
 # ═══════════════════════════════════════════════════════════════════════════════
