@@ -366,11 +366,11 @@ def find_sr_levels(close, window=10, cluster_pct=0.025, lookback=130):
         "pct_to_sup":  ((current/nearest_sup)-1)*100 if nearest_sup else None,
     }
 
-def analyze(ticker, df):
-    if df is None or len(df) < 60: return None
+def analyze(ticker, df, min_periods=60):
+    if df is None or len(df) < min_periods: return None
     close  = df["Close"].dropna()
     volume = df["Volume"].dropna() if "Volume" in df.columns else None
-    if len(close) < 60: return None
+    if len(close) < min_periods: return None
     try:
         r  = rsi(close); ml, ms, mh = macd(close)
         _, _, _, bw, pct_b = bollinger(close)
@@ -459,15 +459,18 @@ def decouverte_scan(finnhub_key, groq_key, known_tickers, top_n=5):
     print(f"{len(trending)} trending")
 
     # ── Analyse des candidats ────────────────────────────────────────────────
+    # Trie par nombre de mentions, puis enrichit les tickers avec yfinance
     sorted_cands = sorted(candidates.items(), key=lambda x: x[1]["count"], reverse=True)
-    results = []
+    results = []; scanned = 0
     for sym, meta in sorted_cands:
         if len(results) >= top_n: break
+        if scanned >= top_n * 4: break  # Evite de scanner trop de tickers lents
+        scanned += 1
         try:
-            df_raw = yf.download(sym, period="14mo", auto_adjust=True,
+            df_raw = yf.download(sym, period="2y", auto_adjust=True,
                                  progress=False, threads=False)
-            if df_raw is None or len(df_raw) < 60: continue
-            s = analyze(sym, df_raw)
+            if df_raw is None or len(df_raw) < 30: continue
+            s = analyze(sym, df_raw, min_periods=30)
             if not s: continue
             raw_arts = meta["articles"][:3]
             if not raw_arts and finnhub_key:
@@ -801,7 +804,18 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
 
     # ── S&R : Cassures + Supports ─────────────────────────────────────────────
     all_sig = {**sig_eu, **sig_etf, **snp}
-    sr_break = {t:s for t,s in all_sig.items() if s.get("breakout")}
+    def _cassure_qualite(s):
+        """Cassure de qualité : volume confirmé OU mouvement significatif+tendance saine."""
+        vol_ok  = s.get("vol_ratio") and s["vol_ratio"] >= 1.2
+        move_ok = s.get("change_1d", 0) >= 2.0 and s.get("rsi", 100) < 70 and s.get("above_sma200")
+        return vol_ok or move_ok
+    sr_break_all = {t:s for t,s in all_sig.items() if s.get("breakout")}
+    sr_break = dict(sorted(
+        {t:s for t,s in sr_break_all.items() if _cassure_qualite(s)}.items(),
+        key=lambda x: (bool(x[1].get("vol_ratio") and x[1]["vol_ratio"]>=1.2),
+                       x[1].get("change_1d", 0)),
+        reverse=True
+    )[:10])
     sr_supp  = {t:s for t,s in all_sig.items() if s.get("at_support")}
 
     sr_break_rows = ""
@@ -991,11 +1005,21 @@ def main():
     all_sig = {**sig_eu, **sig_etf, **snp}
 
     # ── S&R ─────────────────────────────────────────────────────────────────
-    sr_break = {t:s for t,s in all_sig.items() if s.get("breakout")}
+    def _cassure_qualite(s):
+        vol_ok  = s.get("vol_ratio") and s["vol_ratio"] >= 1.2
+        move_ok = s.get("change_1d", 0) >= 2.0 and s.get("rsi", 100) < 70 and s.get("above_sma200")
+        return vol_ok or move_ok
+    sr_break_all = {t:s for t,s in all_sig.items() if s.get("breakout")}
+    sr_break = dict(sorted(
+        {t:s for t,s in sr_break_all.items() if _cassure_qualite(s)}.items(),
+        key=lambda x: (bool(x[1].get("vol_ratio") and x[1]["vol_ratio"]>=1.2),
+                       x[1].get("change_1d", 0)),
+        reverse=True
+    )[:10])
     sr_supp  = {t:s for t,s in all_sig.items() if s.get("at_support")}
     if sr_break:
-        sec("🚀 CASSURES DE RÉSISTANCE","=")
-        for t,s in sorted(sr_break.items(), key=lambda x:x[1].get("change_1d",0), reverse=True):
+        sec(f"🚀 CASSURES DE RÉSISTANCE (top {len(sr_break)}/{len(sr_break_all)} filtrées)","=")
+        for t,s in sr_break.items():
             row_con(s["name"],t,s,f"Cassure {s['breakout']:.2f}")
     if sr_supp:
         sec("🛡️ REBONDS SUR SUPPORT","─")
