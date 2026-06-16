@@ -716,7 +716,7 @@ def html_row(name, ticker, s, badge="", news_map=None):
     meta_line  = (f'<div style="margin-top:2px;font-size:11px">' + ' &nbsp;·&nbsp; '.join(meta_parts) + '</div>') if meta_parts else ""
     articles   = (news_map or {}).get(ticker, [])
     return f"""
-    <tr>
+    <tr style="break-inside:avoid;page-break-inside:avoid">
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
         <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker_link(ticker)})</span>
         &nbsp;{conf_badge_html(s)}{badge_html}<br>
@@ -732,8 +732,8 @@ def html_row(name, ticker, s, badge="", news_map=None):
 def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
     content = rows_html or f'<tr><td colspan="2" style="padding:8px 12px;color:#6b7280">{empty_msg}</td></tr>'
     return f"""
-    <div class="section-block" style="margin-bottom:24px;page-break-inside:avoid">
-      <div style="background:{color};color:#fff;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:bold">{title}</div>
+    <div style="margin-bottom:24px">
+      <div style="background:{color};color:#fff;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:bold;page-break-after:avoid;break-after:avoid">{title}</div>
       <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 6px 6px">
         {content}
       </table>
@@ -787,7 +787,7 @@ def scouting_html(buys, sells):
             f'🤖 {item["synthesis"]}</div>' if item["synthesis"] else ""
         )
         return f"""
-        <tr><td style="padding:10px 12px;border-bottom:1px solid #f0f0f0">
+        <tr style="break-inside:avoid;page-break-inside:avoid"><td style="padding:10px 12px;border-bottom:1px solid #f0f0f0">
           <div>
             <span style="font-size:18px;font-weight:bold;color:{col_bdr}">{arrow}{abs(pct1d):.1f}%</span>
             &nbsp;<strong style="font-size:13px">{ticker_link(t, name)}</strong>
@@ -803,15 +803,15 @@ def scouting_html(buys, sells):
     buys_rows  = "".join(card(i,"buy")  for i in buys)
     sells_rows = "".join(card(i,"sell") for i in sells)
     return f"""
-    <div class="section-block" style="margin-bottom:24px;border:2px solid #1e3a5f;border-radius:8px;overflow:hidden;page-break-inside:avoid">
-      <div style="background:#1e3a5f;color:#fff;padding:10px 16px">
+    <div style="margin-bottom:24px;border:2px solid #1e3a5f;border-radius:8px;overflow:hidden">
+      <div style="background:#1e3a5f;color:#fff;padding:10px 16px;page-break-after:avoid;break-after:avoid">
         <span style="font-size:15px;font-weight:bold">🔭 Scouting — Achat / Vente · Effet mouton</span>
         <span style="font-size:11px;opacity:0.7;margin-left:8px">Top mouvements · recoupés avec l'actualité</span>
       </div>
-      <div style="background:#dcfce7;padding:6px 12px;font-weight:bold;font-size:12px;color:#166534">
+      <div style="background:#dcfce7;padding:6px 12px;font-weight:bold;font-size:12px;color:#166534;page-break-after:avoid;break-after:avoid">
         🟢 TOP ACHATS — momentum haussier</div>
       <table style="width:100%;border-collapse:collapse">{buys_rows}</table>
-      <div style="background:#fee2e2;padding:6px 12px;font-weight:bold;font-size:12px;color:#991b1b;border-top:1px solid #e5e7eb">
+      <div style="background:#fee2e2;padding:6px 12px;font-weight:bold;font-size:12px;color:#991b1b;border-top:1px solid #e5e7eb;page-break-after:avoid;break-after:avoid">
         🔴 TOP VENTES — pression baissière</div>
       <table style="width:100%;border-collapse:collapse">{sells_rows}</table>
     </div>"""
@@ -1049,6 +1049,52 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     if not snp_content:
         snp_content = '<div style="padding:8px 12px;color:#6b7280;font-size:13px">Aucun signal notable.</div>'
 
+    # ── Flash du jour — top signaux par conf_score (page 1) ──────────────────
+    flash_candidates = []
+    for t, s in sr_break.items():
+        flash_candidates.append(("🚀 Cassure", t, s))
+    for t, s in eu_buy_all.items():
+        if t not in sr_break:
+            label = "⭐⭐ Achat fort" if s["oversold_score"] >= 4 else "⭐ Achat"
+            flash_candidates.append((label, t, s))
+    for t, s in {**snp_buy, **snp_mom}.items():
+        if t not in sr_break:
+            flash_candidates.append(("🌍 USA/Asie", t, s))
+    flash_candidates.sort(key=lambda x: x[2].get("conf_score", 0), reverse=True)
+    flash_rows = ""
+    for label, t, s in flash_candidates[:6]:
+        c1d = s.get("change_1d", 0); c1m = s.get("change_1mo", 0)
+        conf = s.get("conf_score", 0)
+        conf_col = "#16a34a" if conf >= 7 else ("#d97706" if conf >= 4 else "#6b7280")
+        type_col = "#0f766e" if "Cassure" in label else ("#16a34a" if "Achat" in label else "#2563eb")
+        flash_rows += (
+            f'<tr style="break-inside:avoid;page-break-inside:avoid">'
+            f'<td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;font-weight:bold;font-size:13px">'
+            f'{ticker_link(t, s["name"])}</td>'
+            f'<td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;font-size:11px">'
+            f'<span style="background:#f0fdf4;color:{type_col};border:1px solid #bbf7d0;'
+            f'padding:1px 6px;border-radius:3px">{label}</span></td>'
+            f'<td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;font-size:12px;color:#555">'
+            f'RSI {s["rsi"]:.0f}</td>'
+            f'<td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">'
+            f'{color_pct(c1d)}/j &nbsp; {color_pct(c1m)}/mois</td>'
+            f'<td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;text-align:center">'
+            f'<span style="color:{conf_col};font-weight:bold;font-size:12px">⬤{conf}/10</span></td>'
+            f'</tr>'
+        )
+    flash_html = ""
+    if flash_rows:
+        flash_html = f"""
+    <div style="margin-bottom:20px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
+      <div style="background:#1e3a5f;color:#fff;padding:8px 14px;font-weight:bold;font-size:13px;page-break-after:avoid;break-after:avoid">
+        ⚡ Flash du jour — Top opportunités
+        <span style="font-size:11px;opacity:0.7;margin-left:8px">triées par score de confiance</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;background:#fff">
+        {flash_rows}
+      </table>
+    </div>"""
+
     n_eu = len(sig_eu); n_etf = len(sig_etf); n_snp = len(snp)
 
     # ── Macro rows ───────────────────────────────────────────────────────────
@@ -1096,6 +1142,7 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
   </div>
   {f'<div class="section-block" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;margin-bottom:20px"><div style="font-size:11px;color:#6b7280;margin-bottom:4px">Macro</div><table style="border-collapse:collapse;width:100%"><tr>{macro_rows}</tr></table></div>' if macro_rows else ""}
   {summary_html}
+  {flash_html}
 
   {scouting_html(scouting[0], scouting[1]) if scouting else ""}
   {decouverte_html(decouvertes)}
