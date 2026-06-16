@@ -496,6 +496,15 @@ def analyze(ticker, df, min_periods=60):
         if cpb < 0.3: conf += 1
         if sr.get("breakout"): conf += 1
         conf_score = min(conf, 10)
+        # Herding score /6 : quantifie la probabilité d'un mouvement grégaire
+        hs = 0
+        if vr and vr >= 2.0:  hs += 3
+        elif vr and vr >= 1.5: hs += 2
+        elif vr and vr >= 1.2: hs += 1
+        if abs(c1d) > 3:             hs += 1   # mouvement journalier fort
+        if (c1d > 0) == (c5d > 0):  hs += 1   # cohérence direction 1j/5j
+        if rsi_slope > 2:            hs += 1   # accélération RSI
+        herding_score = min(hs, 6)
         # YTD depuis le 1er janvier de l'année en cours
         try:
             jan1 = pd.Timestamp(close.index[-1].year, 1, 1)
@@ -510,7 +519,9 @@ def analyze(ticker, df, min_periods=60):
                 "vol_ratio":vr,"squeeze":squeeze,"pct_b":cpb,
                 "oversold_score":os,"trend_score":ts,"overbought":cr>72,
                 "price":cp,"change_1d":c1d,"change_5d":c5d,"change_1mo":c1m,
-                "change_ytd":change_ytd,"rsi_slope":rsi_slope,"conf_score":conf_score,
+                "change_ytd":change_ytd,"rsi_slope":rsi_slope,
+                "herding_score":herding_score,"sector_drift":0.0,
+                "conf_score":conf_score,
                 "pct_from_h52":pct_from_h52,"pct_from_l52":pct_from_l52,
                 **sr}
     except: return None
@@ -614,9 +625,15 @@ def build_scouting(all_sig, finnhub_key, groq_key, top_n=3):
                     vol_txt = f" (Vol×{s['vol_ratio']:.1f})" if s.get("vol_ratio") and s["vol_ratio"]>1 else ""
                     rsi_sl = s.get("rsi_slope", 0)
                     rsi_txt = f", RSI en {'hausse' if rsi_sl>0 else 'baisse'} ({rsi_sl:+.1f} sur 3j)"
+                    herding = s.get("herding_score", 0)
+                    drift   = s.get("sector_drift", 0)
+                    herding_txt = (f" Score herding {herding}/6"
+                                   f" ({'mouvement grégaire probable' if herding>=4 else 'herding modéré' if herding>=2 else 'peu grégaire'})."
+                                   f" Dérive vs médiane sectorielle : {drift:+.1f}%"
+                                   f" ({'mouvement individuel' if abs(drift)>2 else 'dans le sens du secteur'}).")
                     prompt = (
                         f"Tu es analyste financier. {s['name']} ({t}) : {s['change_1d']:+.1f}% aujourd'hui, "
-                        f"{c5d:+.1f}% sur 5j ({trend_conf}){vol_txt}{rsi_txt}. RSI {s['rsi']:.0f}.\n"
+                        f"{c5d:+.1f}% sur 5j ({trend_conf}){vol_txt}{rsi_txt}. RSI {s['rsi']:.0f}.{herding_txt}\n"
                         f"Actualités :\n" + "\n".join(texts) +
                         f"\nEn 2 phrases max, explique cette {direction} : effet mouton ou mouvement fondamental ? Réponds en français."
                     )
@@ -770,6 +787,17 @@ def scouting_html(buys, sells):
                    if vol_ok else "")
         rsi_dir = "↑" if rsi_slope > 0 else ("↓" if rsi_slope < 0 else "→")
         rsi_tag = f'<span style="font-size:11px;color:#6b7280">RSI {s["rsi"]:.0f}{rsi_dir}</span>'
+        herding = s.get("herding_score", 0)
+        drift   = s.get("sector_drift", 0)
+        if herding >= 5:
+            h_bg, h_col, h_bd, h_lbl = "#fff7ed","#c2410c","#fed7aa", f"🐑 Herding {herding}/6"
+        elif herding >= 3:
+            h_bg, h_col, h_bd, h_lbl = "#fefce8","#854d0e","#fde68a", f"⚠️ Herding {herding}/6"
+        else:
+            h_bg, h_col, h_bd, h_lbl = "#eff6ff","#1d4ed8","#bfdbfe", f"🔍 Herding {herding}/6"
+        herding_tag = (f'<span style="background:{h_bg};color:{h_col};border:1px solid {h_bd};'
+                       f'padding:1px 6px;border-radius:3px;font-size:10px">{h_lbl}</span>&nbsp;')
+        drift_tag = (f'<span style="font-size:10px;color:#6b7280">dérive {drift:+.1f}%&nbsp;vs&nbsp;secteur</span>')
         arts_html = ""
         synth_html = (
             f'<div style="margin-top:6px;padding:5px 8px;background:{col_bg};'
@@ -787,6 +815,7 @@ def scouting_html(buys, sells):
             <span style="color:#6b7280">5j&nbsp;:&nbsp;{pct5d:+.1f}%</span>
             &nbsp;&nbsp;{confirm_tag}&nbsp;&nbsp;{vol_tag}&nbsp;{rsi_tag}
           </div>
+          <div style="margin-top:4px">{herding_tag}{drift_tag}</div>
           {arts_html}{synth_html}
         </td></tr>"""
 
@@ -1298,6 +1327,16 @@ def main():
         if s: snp[t]     = {"name": NON_PEA.get(t,t), **s}
 
     all_sig = {**sig_eu, **sig_etf, **snp}
+
+    # ── Dérive sectorielle (écart vs médiane du groupe le même jour) ──────────
+    eu_c1d  = [s["change_1d"] for s in sig_eu.values()]
+    snp_c1d = [s["change_1d"] for s in snp.values()]
+    eu_median  = float(np.median(eu_c1d))  if eu_c1d  else 0.0
+    snp_median = float(np.median(snp_c1d)) if snp_c1d else 0.0
+    for s in sig_eu.values():  s["sector_drift"] = round(s["change_1d"] - eu_median,  2)
+    for s in snp.values():     s["sector_drift"] = round(s["change_1d"] - snp_median, 2)
+    # ETFs = benchmarks eux-mêmes, dérive non pertinente
+    for s in sig_etf.values(): s["sector_drift"] = 0.0
 
     # ── S&R ─────────────────────────────────────────────────────────────────
     def _cassure_qualite(s):
