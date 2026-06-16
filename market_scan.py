@@ -10,6 +10,8 @@ import numpy as np
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 import urllib.request
 import yfinance as yf
 
@@ -1106,24 +1108,76 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
 </body></html>"""
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  PDF
+# ═══════════════════════════════════════════════════════════════════════════════
+def generate_pdf(html_body, path="/tmp/scan.pdf"):
+    """Convertit le HTML du rapport en PDF via WeasyPrint (fidèle au rendu visuel)."""
+    try:
+        from weasyprint import HTML
+        HTML(string=html_body).write_pdf(path)
+        print(f"  [PDF] Généré : {path} ✓")
+        return path
+    except Exception as e:
+        print(f"  [PDF] Erreur WeasyPrint : {e}")
+        return None
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  EMAIL
 # ═══════════════════════════════════════════════════════════════════════════════
-def send_email(html_body, now):
-    gmail_user = os.environ.get("GMAIL_USER","")
-    gmail_pwd  = os.environ.get("GMAIL_APP_PASSWORD","")
+def send_email(html_body, now, pdf_path=None, groq_summary=None, stats_txt=None):
+    gmail_user = os.environ.get("GMAIL_USER", "")
+    gmail_pwd  = os.environ.get("GMAIL_APP_PASSWORD", "")
     recipient  = os.environ.get("RECIPIENT_EMAIL", gmail_user)
+    cc_raw     = os.environ.get("CC_EMAILS", "")
+    cc_list    = [a.strip() for a in cc_raw.split(",") if a.strip()]
     if not gmail_user or not gmail_pwd:
         print("  [email] GMAIL_USER ou GMAIL_APP_PASSWORD non défini — email ignoré.")
         return
-    msg = MIMEMultipart("alternative")
+
+    # ── Corps texte simple ────────────────────────────────────────────────────
+    lines = [
+        f"Veille stratégique Bourse — {now.strftime('%A %d/%m/%Y')}",
+        "",
+    ]
+    if groq_summary:
+        lines += [groq_summary, ""]
+    if stats_txt:
+        lines += [stats_txt, ""]
+    lines.append("Rapport complet en pièce jointe (PDF).")
+    text_body = "\n".join(lines)
+
+    # ── Construction du message ───────────────────────────────────────────────
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = f"📊 Veille stratégique Bourse — {now.strftime('%d/%m/%Y')}"
-    msg["From"] = gmail_user; msg["To"] = recipient
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    msg["From"]    = gmail_user
+    msg["To"]      = recipient
+    if cc_list:
+        msg["Cc"] = ", ".join(cc_list)
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+
+    # ── Pièce jointe PDF ─────────────────────────────────────────────────────
+    if pdf_path:
+        try:
+            with open(pdf_path, "rb") as f:
+                part = MIMEBase("application", "pdf")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition", "attachment",
+                filename=f"veille_bourse_{now.strftime('%Y%m%d')}.pdf"
+            )
+            msg.attach(part)
+        except Exception as e:
+            print(f"  [email] Erreur pièce jointe PDF : {e}")
+
+    # ── Envoi ─────────────────────────────────────────────────────────────────
+    all_recipients = [recipient] + cc_list
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
             srv.login(gmail_user, gmail_pwd)
-            srv.sendmail(gmail_user, recipient, msg.as_string())
-        print(f"  [email] Envoyé à {recipient} ✓")
+            srv.sendmail(gmail_user, all_recipients, msg.as_string())
+        cc_info = f" + {len(cc_list)} CC" if cc_list else ""
+        print(f"  [email] Envoyé à {recipient}{cc_info} ✓")
     except Exception as e:
         print(f"  [email] Erreur : {e}")
 
@@ -1268,13 +1322,11 @@ def main():
     print("OK" if groq_summary else "skipped")
 
     # ── News ─────────────────────────────────────────────────────────────────
-    # Widen to trend_score>=4 for news fetching (display still uses >=5)
     eu_mom_news = {t for t,s in sig_eu.items() if s["trend_score"]>=4 and not s["overbought"]}
     signal_tickers = list(set(
         list(eu_buy) + list(eu_mom_news) + list(sr_break) + list(sr_supp)
         + list(snp_buy) + list(snp_mom)
     ))
-    # Synthèse Groq uniquement pour les signaux prioritaires (évite le rate limit)
     synthesize_for = set(sr_break) | set(eu_buy) | set(sr_supp) | set(snp_buy)
     print(f"  [News] {len(signal_tickers)} valeurs ({len(synthesize_for)} avec synthèse)...", end=" ", flush=True)
     news_map = get_ticker_news(signal_tickers, synthesize_for=synthesize_for)
@@ -1289,10 +1341,19 @@ def main():
     decouvertes = decouverte_scan(finnhub_key, groq_key, known, top_n=5)
     print(f"  [Découvertes] {len(decouvertes)} valeurs retenues")
 
-    # ── Email ─────────────────────────────────────────────────────────────────
+    # ── Génération HTML + PDF + Email ─────────────────────────────────────────
     html = build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map,
                       macro_data=macro_data, groq_key=groq_key, groq_summary=groq_summary)
-    send_email(html, now)
+
+    print(f"\n  [PDF] Génération...", end=" ", flush=True)
+    pdf_path = generate_pdf(html)
+
+    stats_txt = (
+        f"Europe : {len(eu_buy)} signaux achat · {len(eu_mom)} momentum · "
+        f"{len(sr_break)} cassures résistance · {len(sr_supp)} rebonds support"
+        + (f" · USA+Asie : {len(snp_buy)} signaux" if snp_buy else "")
+    )
+    send_email(html, now, pdf_path=pdf_path, groq_summary=groq_summary, stats_txt=stats_txt)
 
 if __name__ == "__main__":
     main()
