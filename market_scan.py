@@ -10,8 +10,6 @@ import numpy as np
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 import urllib.request
 import yfinance as yf
 
@@ -228,7 +226,7 @@ def groq_batch_synthesize(ticker_sources: dict, groq_key: str) -> dict:
         resp = Groq(api_key=groq_key).chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=min(40 * len(lines), 2000),
+            max_tokens=min(20 * len(lines), 800),
         )
         result = resp.choices[0].message.content.strip()
         syntheses = {}
@@ -617,7 +615,7 @@ def build_scouting(all_sig, finnhub_key, groq_key, top_n=3):
                         from groq import Groq
                         resp = Groq(api_key=groq_key).chat.completions.create(
                             model="llama-3.1-8b-instant",
-                            messages=[{"role":"user","content":prompt}], max_tokens=130)
+                            messages=[{"role":"user","content":prompt}], max_tokens=80)
                         synthesis = resp.choices[0].message.content.strip()
                     except Exception as e:
                         print(f" [scout groq ERR: {e}]", end="", flush=True)
@@ -660,28 +658,13 @@ def sr_hint_html(s):
     return (' &nbsp;·&nbsp; '.join(parts)) if parts else ""
 
 def news_html(news_entry):
+    """Affiche uniquement la synthèse IA (sans boutons source)."""
     if not news_entry: return ""
-    html = ""
     synthesis = news_entry.get("synthesis") if isinstance(news_entry, dict) else None
-    articles  = news_entry.get("articles", []) if isinstance(news_entry, dict) else news_entry
-    if synthesis:
-        html += (f'<div style="margin-top:6px;padding:6px 8px;background:#f0fdf4;'
-                 f'border-left:3px solid #16a34a;border-radius:3px;font-size:11px;color:#166534">'
-                 f'🤖 {synthesis}</div>')
-    # Boutons Source (sans titre)
-    src_buttons = ""
-    for i, item in enumerate(articles[:3]):
-        url = item[3] if len(item) > 3 else ""
-        if url:
-            src_buttons += (
-                f'<a href="{url}" style="display:inline-block;margin:3px 4px 0 0;'
-                f'padding:2px 8px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;'
-                f'border-radius:4px;font-size:10px;text-decoration:none" target="_blank">'
-                f'🔗 Source {i+1}</a>'
-            )
-    if src_buttons:
-        html += f'<div style="margin-top:4px">{src_buttons}</div>'
-    return html
+    if not synthesis: return ""
+    return (f'<div style="margin-top:5px;padding:4px 8px;background:#f0fdf4;'
+            f'border-left:3px solid #16a34a;border-radius:3px;font-size:11px;color:#166534;'
+            f'line-height:1.4">🤖 {synthesis}</div>')
 
 def conf_badge_html(s):
     """Badge score de confiance /10."""
@@ -701,29 +684,39 @@ def w52_hint_html(s):
         parts.append(f'<span style="color:#dc2626;font-size:10px">↗52bas&nbsp;+{l:.1f}%</span>')
     return (' &nbsp;·&nbsp; '.join(parts)) if parts else ""
 
-def html_row(name, ticker, s, badge="", news_map=None):
-    ind = [f'RSI {s["rsi"]:.0f}']
-    if s["bull_cross"]: ind.append("MACD↑")
-    elif s["macd"]>s["signal"]: ind.append("MACD+")
-    else: ind.append("MACD-")
-    if s["above_sma200"] is True:  ind.append("▲SMA200")
-    if s.get("vol_ratio") and s["vol_ratio"]>=1.5: ind.append(f'Vol×{s["vol_ratio"]:.1f}')
-    if s.get("squeeze"): ind.append("BB squeeze")
-    ind_html   = " · ".join(ind)
-    badge_html = f' <span style="color:#6b7280;font-size:12px">{badge}</span>' if badge else ""
-    sr_h  = sr_hint_html(s); w52_h = w52_hint_html(s)
-    meta_parts = [p for p in [sr_h, w52_h] if p]
-    meta_line  = (f'<div style="margin-top:2px;font-size:11px">' + ' &nbsp;·&nbsp; '.join(meta_parts) + '</div>') if meta_parts else ""
-    articles   = (news_map or {}).get(ticker, [])
+def html_row(name, ticker, s, badge="", news_map=None, tag=None):
+    """Ligne simplifiée : RSI coloré + MACD direction + synthèse IA. Tag = (label, couleur_hex)."""
+    rsi_val = s["rsi"]
+    if rsi_val < 35:    rsi_col = "#dc2626"
+    elif rsi_val < 45:  rsi_col = "#d97706"
+    elif rsi_val <= 65: rsi_col = "#16a34a"
+    else:               rsi_col = "#7c3aed"
+
+    if s["bull_cross"]:           macd_txt, macd_col = "MACD ↑", "#16a34a"
+    elif s["macd"] > s["signal"]: macd_txt, macd_col = "MACD +", "#2563eb"
+    else:                         macd_txt, macd_col = "MACD −", "#9ca3af"
+
+    tag_html = ""
+    if tag:
+        lbl, col = tag
+        tag_html = (f'<span style="background:{col}18;color:{col};border:1px solid {col}50;'
+                    f'padding:1px 6px;border-radius:3px;font-size:10px;margin-right:5px">{lbl}</span>')
+
+    articles = (news_map or {}).get(ticker, [])
     return f"""
     <tr style="break-inside:avoid;page-break-inside:avoid">
       <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
-        <strong>{name}</strong> <span style="color:#6b7280;font-size:12px">({ticker_link(ticker)})</span>
-        &nbsp;{conf_badge_html(s)}{badge_html}<br>
-        <span style="font-size:12px;color:#555">{ind_html}</span>{meta_line}
+        {tag_html}<strong style="font-size:14px">{name}</strong>
+        <span style="color:#6b7280;font-size:11px;margin-left:4px">{ticker_link(ticker)}</span>
+        &nbsp;{conf_badge_html(s)}<br>
+        <span style="font-size:12px">
+          <span style="color:{rsi_col}">RSI {rsi_val:.0f}</span>
+          &nbsp;·&nbsp;
+          <span style="color:{macd_col}">{macd_txt}</span>
+        </span>
         {news_html(articles)}
       </td>
-      <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap">
+      <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap;vertical-align:top">
         {color_pct(s["change_1d"])}/j<br>
         <span style="font-size:12px">{color_pct(s["change_1mo"])}/mois</span>
       </td>
@@ -769,18 +762,6 @@ def scouting_html(buys, sells):
         rsi_dir = "↑" if rsi_slope > 0 else ("↓" if rsi_slope < 0 else "→")
         rsi_tag = f'<span style="font-size:11px;color:#6b7280">RSI {s["rsi"]:.0f}{rsi_dir}</span>'
         arts_html = ""
-        src_btns = ""
-        for i, a in enumerate(item["articles"][:3]):
-            url = a.get("url","")
-            if url:
-                src_btns += (
-                    f'<a href="{url}" style="display:inline-block;margin:3px 4px 0 0;'
-                    f'padding:2px 8px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;'
-                    f'border-radius:4px;font-size:10px;text-decoration:none" target="_blank">'
-                    f'🔗 Source {i+1}</a>'
-                )
-        if src_btns:
-            arts_html = f'<div style="margin-top:4px">{src_btns}</div>'
         synth_html = (
             f'<div style="margin-top:6px;padding:5px 8px;background:{col_bg};'
             f'border-left:3px solid {col_bdr};border-radius:3px;font-size:11px;color:{col_txt}">'
@@ -983,18 +964,6 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     sr_supp_d = {t:s for t,s in sr_supp.items() if t not in used}
     used |= set(sr_supp_d.keys())
 
-    sr_break_rows = ""
-    for t,s in sr_break.items():
-        res_lvl = s["breakout"]
-        badge = f'🚀 +{((s["price"]/res_lvl)-1)*100:.1f}% au-dessus de {res_lvl:.2f}'
-        sr_break_rows += html_row(s["name"], t, s, badge, nm)
-
-    sr_supp_rows = ""
-    for t,s in sorted(sr_supp_d.items(), key=lambda x: x[1].get("pct_to_sup",999)):
-        sup_lvl = s["at_support"]
-        badge = f'🛡️ à {s["pct_to_sup"]:.1f}% du support {sup_lvl:.2f}'
-        sr_supp_rows += html_row(s["name"], t, s, badge, nm)
-
     # ── Europe — signaux (déduplication) ─────────────────────────────────────
     eu_buy_s = {t:s for t,s in sig_eu.items()
                 if t not in used and s["oversold_score"]>=4
@@ -1005,49 +974,74 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     eu_buy_all = (dict(sorted(eu_buy_s.items(), key=lambda x:x[1]["oversold_score"], reverse=True))
                 | dict(sorted(eu_buy_m.items(), key=lambda x:x[1]["oversold_score"], reverse=True)[:8]))
     used |= set(eu_buy_all.keys())
-    eu_buy_rows = "".join(
-        html_row(s["name"], t, s,
-                 ("⭐⭐ Fort" if s["oversold_score"]>=4 else "⭐ Modéré") + f' [{s["oversold_score"]}/8]', nm)
-        for t,s in eu_buy_all.items()
-    )
 
     eu_mom = {t:s for t,s in sig_eu.items()
               if t not in used and s["trend_score"]>=5 and s["oversold_score"]<=2 and not s["overbought"]}
     eu_mom = dict(sorted(eu_mom.items(), key=lambda x:x[1]["trend_score"], reverse=True)[:8])
     used |= set(eu_mom.keys())
-    eu_mom_rows = "".join(html_row(s["name"],t,s,f'Trend {s["trend_score"]}/6',nm) for t,s in eu_mom.items())
 
-    eu_ob = dict(sorted({t:s for t,s in sig_eu.items() if s["overbought"]}.items(),
-                        key=lambda x:x[1]["rsi"], reverse=True)[:8])
-    eu_ob_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in eu_ob.items())
-
-    # ── Compressions BB (toutes géographies) ─────────────────────────────────
     sq = {t:s for t,s in all_sig.items() if s.get("squeeze") and not s["overbought"]}
-    sq_rows = "".join(
-        f'<tr><td style="padding:6px 12px;border-bottom:1px solid #f0f0f0">'
-        f'<strong>{s["name"]}</strong> ({ticker_link(t)}) · RSI {s["rsi"]:.0f} · {color_pct(s["change_1d"])}/j'
-        f'</td></tr>'
-        for t,s in list(sq.items())[:8]
-    ) if sq else ""
 
     # ── USA + Asie ───────────────────────────────────────────────────────────
     snp_buy = {t:s for t,s in snp.items() if s["oversold_score"]>=3 and not s["overbought"]}
     snp_mom = {t:s for t,s in snp.items() if s["trend_score"]>=4 and not s["overbought"] and t not in snp_buy}
-    snp_ob  = dict(sorted({t:s for t,s in snp.items() if s["overbought"]}.items(),
-                           key=lambda x:x[1]["rsi"], reverse=True)[:5])
 
-    def sub_block(label, rows):
-        return (f'<div style="margin:8px 0 4px;font-size:13px;color:#6b7280;padding:0 12px">{label}</div>'
-                f'<table style="width:100%;border-collapse:collapse">{rows}</table>') if rows else ""
+    # ── Section fusionnée : Signaux d'action (cassures + achats forts + rebonds) ──
+    action_items = []
+    for t, s in sr_break.items():
+        action_items.append(("🚀 Cassure", "#0f766e", t, s))
+    for t, s in {k: v for k, v in eu_buy_all.items() if v["oversold_score"] >= 4}.items():
+        action_items.append(("⭐⭐ Achat fort", "#16a34a", t, s))
+    for t, s in sorted(sr_supp_d.items(), key=lambda x: x[1].get("conf_score", 0), reverse=True):
+        action_items.append(("🛡️ Support", "#0369a1", t, s))
+    action_items.sort(key=lambda x: x[3].get("conf_score", 0), reverse=True)
+    action_rows = "".join(
+        html_row(s["name"], t, s, tag=(lbl, col), news_map=nm)
+        for lbl, col, t, s in action_items
+    )
 
-    snp_buy_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in sorted(snp_buy.items(),key=lambda x:x[1]["oversold_score"],reverse=True))
-    snp_mom_rows = "".join(html_row(s["name"],t,s,"",nm) for t,s in sorted(snp_mom.items(),key=lambda x:x[1]["trend_score"],reverse=True))
-    snp_ob_rows  = "".join(html_row(s["name"],t,s,"",nm) for t,s in snp_ob.items())
-    snp_content  = (sub_block("▶ Signaux achat / rebond", snp_buy_rows)
-                  + sub_block("▶ Momentum haussier", snp_mom_rows)
-                  + sub_block("▶ Surachat", snp_ob_rows))
-    if not snp_content:
-        snp_content = '<div style="padding:8px 12px;color:#6b7280;font-size:13px">Aucun signal notable.</div>'
+    # ── Section fusionnée : À surveiller (achats modérés + momentum + BB) ─────
+    watch_used = {t for _, _, t, _ in action_items}
+    watch_items = []
+    for t, s in {k: v for k, v in eu_buy_all.items() if v["oversold_score"] < 4}.items():
+        if t not in watch_used:
+            watch_items.append(("⭐ Achat", "#16a34a", t, s)); watch_used.add(t)
+    for t, s in eu_mom.items():
+        if t not in watch_used:
+            watch_items.append(("📈 Momentum", "#2563eb", t, s)); watch_used.add(t)
+    for t, s in list(sq.items())[:8]:
+        if t not in watch_used:
+            watch_items.append(("⚡ BB Squeeze", "#7c3aed", t, s)); watch_used.add(t)
+    watch_items.sort(key=lambda x: x[3].get("conf_score", 0), reverse=True)
+    watch_items = watch_items[:12]
+    watch_rows = "".join(
+        html_row(s["name"], t, s, tag=(lbl, col), news_map=nm)
+        for lbl, col, t, s in watch_items
+    )
+
+    # ── Section fusionnée : Monde (USA+Asie + ETFs) ───────────────────────────
+    monde_items = []
+    for t, s in sorted(snp_buy.items(), key=lambda x: x[1].get("conf_score", 0), reverse=True):
+        monde_items.append(("🌎 Achat", "#2563eb", t, s))
+    for t, s in sorted(snp_mom.items(), key=lambda x: x[1].get("conf_score", 0), reverse=True):
+        monde_items.append(("📈 Momentum", "#0891b2", t, s))
+    for t, s in sorted(sig_etf.items(), key=lambda x: x[1].get("change_1d", 0), reverse=True):
+        idx = ETF_INDEX.get(t, "ETF")
+        monde_items.append((f"📦 {idx}", "#0369a1", t, s))
+    monde_rows = "".join(
+        html_row(s["name"], t, s, tag=(lbl, col), news_map=nm)
+        for lbl, col, t, s in monde_items[:15]
+    )
+
+    # ── Surachat (Europe + Monde, compact) ────────────────────────────────────
+    eu_ob = dict(sorted({t: s for t, s in sig_eu.items() if s["overbought"]}.items(),
+                        key=lambda x: x[1]["rsi"], reverse=True)[:6])
+    snp_ob = dict(sorted({t: s for t, s in snp.items() if s["overbought"]}.items(),
+                         key=lambda x: x[1]["rsi"], reverse=True)[:4])
+    ob_rows = "".join(
+        html_row(s["name"], t, s, tag=("🔴 Surachat", "#dc2626"), news_map=nm)
+        for t, s in {**eu_ob, **snp_ob}.items()
+    )
 
     # ── Flash du jour — top signaux par conf_score (page 1) ──────────────────
     flash_candidates = []
@@ -1108,7 +1102,7 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
                            f'<div style="color:{mcol};font-size:11px">{marrow}{abs(mc):.2f}%</div></td>')
 
     # ── Résumé exécutif Groq ─────────────────────────────────────────────────
-    summary_txt = groq_summary  # pre-computed in main() before news fetching
+    summary_txt = groq_summary
     summary_html = (
         f'<div style="background:#eff6ff;border-left:4px solid #2563eb;border-radius:6px;'
         f'padding:12px 16px;margin-bottom:20px;font-size:13px;color:#1e3a5f;line-height:1.6">'
@@ -1119,14 +1113,12 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
 <html><head><meta charset="utf-8">
 <style>
   * {{ box-sizing: border-box; }}
-  body {{ max-width: 700px !important; }}
+  body {{ font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; background: #f9fafb; padding: 20px; }}
   table {{ max-width: 100%; }}
   td, th {{ word-wrap: break-word; overflow-wrap: break-word; }}
-  .section-block {{ page-break-inside: avoid; }}
-  .no-overflow {{ overflow: visible !important; }}
 </style>
 </head>
-<body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;background:#f9fafb;padding:20px">
+<body>
 
   <div style="background:#1e3a5f;color:#fff;padding:18px 24px;border-radius:8px;margin-bottom:20px">
     <div style="font-size:20px;font-weight:bold">📊 Veille stratégique — Bourse</div>
@@ -1136,29 +1128,20 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     </div>
   </div>
 
-  <div class="section-block" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px">
+  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px">
     <div style="font-weight:bold;margin-bottom:8px;color:#374151">Indices</div>
     <table style="border-collapse:collapse;width:100%;table-layout:fixed">{idx_rows}</table>
   </div>
-  {f'<div class="section-block" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;margin-bottom:20px"><div style="font-size:11px;color:#6b7280;margin-bottom:4px">Macro</div><table style="border-collapse:collapse;width:100%"><tr>{macro_rows}</tr></table></div>' if macro_rows else ""}
+  {f'<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;margin-bottom:20px"><div style="font-size:11px;color:#6b7280;margin-bottom:4px">Macro</div><table style="border-collapse:collapse;width:100%"><tr>{macro_rows}</tr></table></div>' if macro_rows else ""}
   {summary_html}
   {flash_html}
 
   {scouting_html(scouting[0], scouting[1]) if scouting else ""}
-  {decouverte_html(decouvertes)}
-  {section_html("🚀 Cassures de résistance — signal achat", "#0f766e", sr_break_rows, "Aucune cassure détectée aujourd'hui.") if sr_break_rows else ""}
-  {section_html("🛡️ Rebonds sur support — à surveiller", "#0369a1", sr_supp_rows, "Aucun rebond sur support détecté.") if sr_supp_rows else ""}
-  {section_html("🟢 Europe — Signaux d'achat &nbsp;<span style='font-size:12px;font-weight:normal'>(⭐⭐ Fort · ⭐ Modéré)</span>", "#16a34a", eu_buy_rows, "Aucun signal d'achat détecté aujourd'hui.")}
-  {section_html("📈 Europe — Momentum haussier confirmé", "#2563eb", eu_mom_rows, "Aucune tendance forte.")}
-  {section_html("🔴 Europe — Surachat — prudence", "#dc2626", eu_ob_rows, "Aucune valeur en surachat.") if eu_ob_rows else ""}
-  {section_html("⚡ Compressions Bollinger — rupture imminente", "#7c3aed", sq_rows, "Aucune compression détectée.") if sq_rows else ""}
 
-  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:20px">
-    <div style="font-weight:bold;margin-bottom:6px;color:#374151">🌍 USA + Asie</div>
-    {snp_content}
-  </div>
-
-  {section_html("📦 ETFs — Exposition mondiale", "#0891b2", etf_rows_html(sig_etf, nm), "Aucune donnée ETF.")}
+  {section_html("⚡ Signaux d'action", "#0f766e", action_rows, "Aucun signal d'action aujourd'hui.") if action_rows else ""}
+  {section_html("👁 À surveiller", "#2563eb", watch_rows, "Aucun signal modéré.") if watch_rows else ""}
+  {section_html("🌍 Monde — USA · Asie · ETFs", "#0891b2", monde_rows, "Aucun signal mondial.") if monde_rows else ""}
+  {section_html("⚠️ Surachat — prudence", "#dc2626", ob_rows, "") if ob_rows else ""}
 
   <div style="text-align:center;font-size:11px;color:#9ca3af;margin-top:16px">
     Généré automatiquement · données Yahoo Finance &amp; Finnhub · Usage personnel uniquement
@@ -1166,35 +1149,10 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
 </body></html>"""
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PDF
-# ═══════════════════════════════════════════════════════════════════════════════
-def generate_pdf(html_body, path="/tmp/scan.pdf"):
-    """Convertit le HTML du rapport en PDF via Playwright (Chromium headless).
-    Rendu identique au navigateur : CSS, couleurs, layout respectés à 100%."""
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            page.set_content(html_body, wait_until="networkidle")
-            page.pdf(
-                path=path,
-                format="A4",
-                margin={"top": "15mm", "bottom": "15mm",
-                        "left": "10mm", "right": "10mm"},
-                print_background=True,
-            )
-            browser.close()
-        print(f"  [PDF] Généré : {path} ✓")
-        return path
-    except Exception as e:
-        print(f"  [PDF] Erreur Playwright : {e}")
-        return None
-
-# ═══════════════════════════════════════════════════════════════════════════════
 #  EMAIL
 # ═══════════════════════════════════════════════════════════════════════════════
-def send_email(html_body, now, pdf_path=None, groq_summary=None, stats_txt=None):
+def send_email(html_body, now):
+    """Envoie le rapport HTML directement (pas de PDF). CC depuis la variable CC_EMAILS."""
     gmail_user = os.environ.get("GMAIL_USER", "")
     gmail_pwd  = os.environ.get("GMAIL_APP_PASSWORD", "")
     recipient  = os.environ.get("RECIPIENT_EMAIL", gmail_user)
@@ -1204,43 +1162,14 @@ def send_email(html_body, now, pdf_path=None, groq_summary=None, stats_txt=None)
         print("  [email] GMAIL_USER ou GMAIL_APP_PASSWORD non défini — email ignoré.")
         return
 
-    # ── Corps texte simple ────────────────────────────────────────────────────
-    lines = [
-        f"Veille stratégique Bourse — {now.strftime('%A %d/%m/%Y')}",
-        "",
-    ]
-    if groq_summary:
-        lines += [groq_summary, ""]
-    if stats_txt:
-        lines += [stats_txt, ""]
-    lines.append("Rapport complet en pièce jointe (PDF).")
-    text_body = "\n".join(lines)
-
-    # ── Construction du message ───────────────────────────────────────────────
-    msg = MIMEMultipart("mixed")
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = f"📊 Veille stratégique Bourse — {now.strftime('%d/%m/%Y')}"
     msg["From"]    = gmail_user
     msg["To"]      = recipient
     if cc_list:
         msg["Cc"] = ", ".join(cc_list)
-    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    # ── Pièce jointe PDF ─────────────────────────────────────────────────────
-    if pdf_path:
-        try:
-            with open(pdf_path, "rb") as f:
-                part = MIMEBase("application", "pdf")
-                part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header(
-                "Content-Disposition", "attachment",
-                filename=f"veille_bourse_{now.strftime('%Y%m%d')}.pdf"
-            )
-            msg.attach(part)
-        except Exception as e:
-            print(f"  [email] Erreur pièce jointe PDF : {e}")
-
-    # ── Envoi ─────────────────────────────────────────────────────────────────
     all_recipients = [recipient] + cc_list
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
@@ -1411,19 +1340,10 @@ def main():
     decouvertes = decouverte_scan(finnhub_key, groq_key, known, top_n=5)
     print(f"  [Découvertes] {len(decouvertes)} valeurs retenues")
 
-    # ── Génération HTML + PDF + Email ─────────────────────────────────────────
+    # ── Génération HTML + Email ───────────────────────────────────────────────
     html = build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map,
                       macro_data=macro_data, groq_key=groq_key, groq_summary=groq_summary)
-
-    print(f"\n  [PDF] Génération...", end=" ", flush=True)
-    pdf_path = generate_pdf(html)
-
-    stats_txt = (
-        f"Europe : {len(eu_buy)} signaux achat · {len(eu_mom)} momentum · "
-        f"{len(sr_break)} cassures résistance · {len(sr_supp)} rebonds support"
-        + (f" · USA+Asie : {len(snp_buy)} signaux" if snp_buy else "")
-    )
-    send_email(html, now, pdf_path=pdf_path, groq_summary=groq_summary, stats_txt=stats_txt)
+    send_email(html, now)
 
 if __name__ == "__main__":
     main()
