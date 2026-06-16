@@ -496,12 +496,21 @@ def analyze(ticker, df, min_periods=60):
         if cpb < 0.3: conf += 1
         if sr.get("breakout"): conf += 1
         conf_score = min(conf, 10)
+        # YTD depuis le 1er janvier de l'année en cours
+        try:
+            jan1 = pd.Timestamp(close.index[-1].year, 1, 1)
+            if close.index.tz is not None:
+                jan1 = jan1.tz_localize(close.index.tz)
+            ytd_idx = max(0, min(int(close.index.searchsorted(jan1)), len(close)-1))
+            change_ytd = float((close.iloc[-1] / close.iloc[ytd_idx] - 1) * 100)
+        except:
+            change_ytd = 0.0
         return {"rsi":cr,"macd":float(ml.iloc[-1]),"signal":float(ms.iloc[-1]),"hist":ch,
                 "bull_cross":bc,"above_sma20":a20,"above_sma50":a50,"above_sma200":a200,
                 "vol_ratio":vr,"squeeze":squeeze,"pct_b":cpb,
                 "oversold_score":os,"trend_score":ts,"overbought":cr>72,
                 "price":cp,"change_1d":c1d,"change_5d":c5d,"change_1mo":c1m,
-                "rsi_slope":rsi_slope,"conf_score":conf_score,
+                "change_ytd":change_ytd,"rsi_slope":rsi_slope,"conf_score":conf_score,
                 "pct_from_h52":pct_from_h52,"pct_from_l52":pct_from_l52,
                 **sr}
     except: return None
@@ -870,6 +879,46 @@ def etf_rows_html(sig_etf, news_map=None):
         </tr>"""
     return rows
 
+def etf_section_html(sig_etf, news_map=None):
+    """Section ETF dédiée : tous les ETFs triés par performance YTD."""
+    nm = news_map or {}
+    rows = ""
+    for t, s in sorted(sig_etf.items(), key=lambda x: x[1].get("change_ytd", 0), reverse=True):
+        ytd = s.get("change_ytd", 0)
+        ytd_col = "#16a34a" if ytd > 0 else "#dc2626"
+        ytd_arr = "▲" if ytd > 0 else "▼"
+        idx = ETF_INDEX.get(t, "")
+        idx_badge = (f'<span style="background:#e0f2fe;color:#0369a1;border:1px solid #bae6fd;'
+                     f'padding:1px 6px;border-radius:3px;font-size:10px;margin-right:4px">{idx}</span>') if idx else ""
+        rsi_val = s["rsi"]
+        if rsi_val < 35:    rsi_col = "#dc2626"
+        elif rsi_val < 45:  rsi_col = "#d97706"
+        elif rsi_val <= 65: rsi_col = "#16a34a"
+        else:               rsi_col = "#7c3aed"
+        if s["bull_cross"]:           macd_txt, macd_col = "MACD ↑", "#16a34a"
+        elif s["macd"] > s["signal"]: macd_txt, macd_col = "MACD +", "#2563eb"
+        else:                         macd_txt, macd_col = "MACD −", "#9ca3af"
+        rows += f"""
+        <tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">
+            {idx_badge}<strong style="font-size:14px">{s["name"]}</strong>
+            <span style="color:#6b7280;font-size:11px;margin-left:4px">{ticker_link(t)}</span>
+            &nbsp;{conf_badge_html(s)}<br>
+            <span style="font-size:12px">
+              <span style="color:{rsi_col}">RSI {rsi_val:.0f}</span>
+              &nbsp;·&nbsp;
+              <span style="color:{macd_col}">{macd_txt}</span>
+            </span>
+            {news_html(nm.get(t, []))}
+          </td>
+          <td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;text-align:right;white-space:nowrap;vertical-align:top">
+            <span style="color:{ytd_col};font-size:15px;font-weight:bold">{ytd_arr}{abs(ytd):.1f}%</span>
+            <span style="font-size:10px;color:#6b7280"> YTD</span><br>
+            <span style="font-size:12px">{color_pct(s["change_1d"])}/j &nbsp; {color_pct(s["change_1mo"])}/mois</span>
+          </td>
+        </tr>"""
+    return rows
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  RÉSUMÉ EXÉCUTIF (Groq)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1019,18 +1068,15 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
         for lbl, col, t, s in watch_items
     )
 
-    # ── Section fusionnée : Monde (USA+Asie + ETFs) ───────────────────────────
+    # ── Section fusionnée : Monde — USA + Asie uniquement ────────────────────
     monde_items = []
     for t, s in sorted(snp_buy.items(), key=lambda x: x[1].get("conf_score", 0), reverse=True):
         monde_items.append(("🌎 Achat", "#2563eb", t, s))
     for t, s in sorted(snp_mom.items(), key=lambda x: x[1].get("conf_score", 0), reverse=True):
         monde_items.append(("📈 Momentum", "#0891b2", t, s))
-    for t, s in sorted(sig_etf.items(), key=lambda x: x[1].get("change_1d", 0), reverse=True):
-        idx = ETF_INDEX.get(t, "ETF")
-        monde_items.append((f"📦 {idx}", "#0369a1", t, s))
     monde_rows = "".join(
         html_row(s["name"], t, s, tag=(lbl, col), news_map=nm)
-        for lbl, col, t, s in monde_items[:15]
+        for lbl, col, t, s in monde_items[:12]
     )
 
     # ── Surachat (Europe + Monde, compact) ────────────────────────────────────
@@ -1138,10 +1184,11 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
 
   {scouting_html(scouting[0], scouting[1]) if scouting else ""}
 
-  {section_html("⚡ Signaux d'action", "#0f766e", action_rows, "Aucun signal d'action aujourd'hui.") if action_rows else ""}
-  {section_html("👁 À surveiller", "#2563eb", watch_rows, "Aucun signal modéré.") if watch_rows else ""}
-  {section_html("🌍 Monde — USA · Asie · ETFs", "#0891b2", monde_rows, "Aucun signal mondial.") if monde_rows else ""}
+  {section_html("⚡ Signaux d'action <span style='font-size:12px;font-weight:normal;opacity:0.85'>(cassure résistance · achat fort · rebond support)</span>", "#0f766e", action_rows, "Aucun signal d'action aujourd'hui.") if action_rows else ""}
+  {section_html("👁 À surveiller <span style='font-size:12px;font-weight:normal;opacity:0.85'>(achat modéré · momentum trend ≥ 5 · BB squeeze)</span>", "#2563eb", watch_rows, "Aucun signal modéré.") if watch_rows else ""}
+  {section_html("🌍 USA · Asie <span style='font-size:12px;font-weight:normal;opacity:0.85'>(oversold ≥ 3 · momentum trend ≥ 4)</span>", "#0891b2", monde_rows, "Aucun signal USA/Asie.") if monde_rows else ""}
   {section_html("⚠️ Surachat — prudence", "#dc2626", ob_rows, "") if ob_rows else ""}
+  {section_html("📦 ETFs PEA — Performance depuis le 1ᵉʳ janvier", "#0369a1", etf_section_html(sig_etf, nm), "Aucune donnée ETF.")}
 
   <div style="text-align:center;font-size:11px;color:#9ca3af;margin-top:16px">
     Généré automatiquement · données Yahoo Finance &amp; Finnhub · Usage personnel uniquement
