@@ -1122,14 +1122,26 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
 #  PDF
 # ═══════════════════════════════════════════════════════════════════════════════
 def generate_pdf(html_body, path="/tmp/scan.pdf"):
-    """Convertit le HTML du rapport en PDF via WeasyPrint (fidèle au rendu visuel)."""
+    """Convertit le HTML du rapport en PDF via Playwright (Chromium headless).
+    Rendu identique au navigateur : CSS, couleurs, layout respectés à 100%."""
     try:
-        from weasyprint import HTML
-        HTML(string=html_body).write_pdf(path)
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.set_content(html_body, wait_until="networkidle")
+            page.pdf(
+                path=path,
+                format="A4",
+                margin={"top": "15mm", "bottom": "15mm",
+                        "left": "10mm", "right": "10mm"},
+                print_background=True,
+            )
+            browser.close()
         print(f"  [PDF] Généré : {path} ✓")
         return path
     except Exception as e:
-        print(f"  [PDF] Erreur WeasyPrint : {e}")
+        print(f"  [PDF] Erreur Playwright : {e}")
         return None
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -21,11 +21,27 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install system dependencies (WeasyPrint)
-        run: sudo apt-get install -y libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf2.0-0
+      - name: Install Python dependencies
+        run: pip install yfinance pandas numpy groq playwright -q
 
-      - name: Install dependencies
-        run: pip install yfinance pandas numpy groq weasyprint -q
+      - name: Get Playwright version (pour la clé de cache)
+        id: pw-version
+        run: echo "version=$(pip show playwright | grep ^Version | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Cache Chromium
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.pw-version.outputs.version }}
+
+      - name: Installer Chromium (premier run ou nouvelle version)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: playwright install chromium --with-deps
+
+      - name: Installer les dépendances système Chromium (cache présent)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
 
       - name: Run market scan
         run: python market_scan.py
