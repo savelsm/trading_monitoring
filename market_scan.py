@@ -942,21 +942,22 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     # ── Indices — 2 lignes de 5-6 max pour éviter le débordement PDF ─────────
     idx_cells = []
     for name, val in indices_data:
+        cell_style = 'padding:4px 6px;text-align:center;vertical-align:middle'
         if val:
             p, c = val; col = "#16a34a" if c>=0 else "#dc2626"; arrow = "▲" if c>=0 else "▼"
             idx_cells.append(
-                f'<td style="padding:4px 8px;text-align:center;width:16%">'
-                f'<div style="font-size:10px;color:#6b7280">{name}</div>'
-                f'<div style="font-weight:bold;font-size:12px">{p:,.0f}</div>'
-                f'<div style="color:{col};font-size:11px">{arrow}{abs(c):.2f}%</div></td>'
+                f'<td style="{cell_style}">'
+                f'<div style="font-size:9px;color:#6b7280;white-space:nowrap">{name}</div>'
+                f'<div style="font-weight:bold;font-size:11px">{p:,.0f}</div>'
+                f'<div style="color:{col};font-size:10px">{arrow}{abs(c):.2f}%</div></td>'
             )
         else:
             idx_cells.append(
-                f'<td style="padding:4px 8px;text-align:center;width:16%">'
-                f'<div style="font-size:10px;color:#6b7280">{name}</div>'
-                f'<div style="color:#9ca3af;font-size:12px">n/d</div></td>'
+                f'<td style="{cell_style}">'
+                f'<div style="font-size:9px;color:#6b7280">{name}</div>'
+                f'<div style="color:#9ca3af;font-size:11px">n/d</div></td>'
             )
-    per_row = 6
+    per_row = 5
     idx_rows = "".join(
         f'<tr>{"".join(idx_cells[i:i+per_row])}</tr>'
         for i in range(0, len(idx_cells), per_row)
@@ -1091,7 +1092,7 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
 
   <div class="section-block" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px">
     <div style="font-weight:bold;margin-bottom:8px;color:#374151">Indices</div>
-    <table style="border-collapse:collapse;width:100%">{idx_rows}</table>
+    <table style="border-collapse:collapse;width:100%;table-layout:fixed">{idx_rows}</table>
   </div>
   {f'<div class="section-block" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;margin-bottom:20px"><div style="font-size:11px;color:#6b7280;margin-bottom:4px">Macro</div><table style="border-collapse:collapse;width:100%"><tr>{macro_rows}</tr></table></div>' if macro_rows else ""}
   {summary_html}
