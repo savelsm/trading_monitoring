@@ -732,7 +732,7 @@ def html_row(name, ticker, s, badge="", news_map=None):
 def section_html(title, color, rows_html, empty_msg="Aucun signal détecté."):
     content = rows_html or f'<tr><td colspan="2" style="padding:8px 12px;color:#6b7280">{empty_msg}</td></tr>'
     return f"""
-    <div style="margin-bottom:24px">
+    <div class="section-block" style="margin-bottom:24px;page-break-inside:avoid">
       <div style="background:{color};color:#fff;padding:8px 14px;border-radius:6px 6px 0 0;font-weight:bold">{title}</div>
       <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 6px 6px">
         {content}
@@ -803,25 +803,17 @@ def scouting_html(buys, sells):
     buys_rows  = "".join(card(i,"buy")  for i in buys)
     sells_rows = "".join(card(i,"sell") for i in sells)
     return f"""
-    <div style="margin-bottom:24px;border:2px solid #1e3a5f;border-radius:8px;overflow:hidden">
+    <div class="section-block" style="margin-bottom:24px;border:2px solid #1e3a5f;border-radius:8px;overflow:hidden;page-break-inside:avoid">
       <div style="background:#1e3a5f;color:#fff;padding:10px 16px">
         <span style="font-size:15px;font-weight:bold">🔭 Scouting — Achat / Vente · Effet mouton</span>
         <span style="font-size:11px;opacity:0.7;margin-left:8px">Top mouvements · recoupés avec l'actualité</span>
       </div>
-      <table style="width:100%;border-collapse:collapse">
-        <tr>
-          <td style="width:50%;vertical-align:top;border-right:1px solid #e5e7eb">
-            <div style="background:#dcfce7;padding:6px 12px;font-weight:bold;font-size:12px;color:#166534">
-              🟢 TOP ACHATS — momentum haussier</div>
-            <table style="width:100%;border-collapse:collapse">{buys_rows}</table>
-          </td>
-          <td style="width:50%;vertical-align:top">
-            <div style="background:#fee2e2;padding:6px 12px;font-weight:bold;font-size:12px;color:#991b1b">
-              🔴 TOP VENTES — pression baissière</div>
-            <table style="width:100%;border-collapse:collapse">{sells_rows}</table>
-          </td>
-        </tr>
-      </table>
+      <div style="background:#dcfce7;padding:6px 12px;font-weight:bold;font-size:12px;color:#166534">
+        🟢 TOP ACHATS — momentum haussier</div>
+      <table style="width:100%;border-collapse:collapse">{buys_rows}</table>
+      <div style="background:#fee2e2;padding:6px 12px;font-weight:bold;font-size:12px;color:#991b1b;border-top:1px solid #e5e7eb">
+        🔴 TOP VENTES — pression baissière</div>
+      <table style="width:100%;border-collapse:collapse">{sells_rows}</table>
     </div>"""
 
 def decouverte_html(decouvertes):
@@ -947,19 +939,28 @@ def build_groq_summary(indices_data, sr_break, eu_buy_all, snp_buy, macro_data, 
 def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, news_map, macro_data=None, groq_key="", groq_summary=None):
     nm = news_map or {}
 
-    # ── Indices ──────────────────────────────────────────────────────────────
-    idx_rows = ""
+    # ── Indices — 2 lignes de 5-6 max pour éviter le débordement PDF ─────────
+    idx_cells = []
     for name, val in indices_data:
         if val:
             p, c = val; col = "#16a34a" if c>=0 else "#dc2626"; arrow = "▲" if c>=0 else "▼"
-            idx_rows += (f'<td style="padding:6px 14px;text-align:center">'
-                         f'<div style="font-size:12px;color:#6b7280">{name}</div>'
-                         f'<div style="font-weight:bold">{p:,.2f}</div>'
-                         f'<div style="color:{col};font-size:12px">{arrow}{abs(c):.2f}%</div></td>')
+            idx_cells.append(
+                f'<td style="padding:4px 8px;text-align:center;width:16%">'
+                f'<div style="font-size:10px;color:#6b7280">{name}</div>'
+                f'<div style="font-weight:bold;font-size:12px">{p:,.0f}</div>'
+                f'<div style="color:{col};font-size:11px">{arrow}{abs(c):.2f}%</div></td>'
+            )
         else:
-            idx_rows += (f'<td style="padding:6px 14px;text-align:center">'
-                         f'<div style="font-size:12px;color:#6b7280">{name}</div>'
-                         f'<div style="color:#9ca3af">n/d</div></td>')
+            idx_cells.append(
+                f'<td style="padding:4px 8px;text-align:center;width:16%">'
+                f'<div style="font-size:10px;color:#6b7280">{name}</div>'
+                f'<div style="color:#9ca3af;font-size:12px">n/d</div></td>'
+            )
+    per_row = 6
+    idx_rows = "".join(
+        f'<tr>{"".join(idx_cells[i:i+per_row])}</tr>'
+        for i in range(0, len(idx_cells), per_row)
+    )
 
     # ── S&R : Cassures + Supports ─────────────────────────────────────────────
     all_sig = {**sig_eu, **sig_etf, **snp}
@@ -1068,7 +1069,16 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     ) if summary_txt else ""
 
     return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head>
+<html><head><meta charset="utf-8">
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ max-width: 700px !important; }}
+  table {{ max-width: 100%; }}
+  td, th {{ word-wrap: break-word; overflow-wrap: break-word; }}
+  .section-block {{ page-break-inside: avoid; }}
+  .no-overflow {{ overflow: visible !important; }}
+</style>
+</head>
 <body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;background:#f9fafb;padding:20px">
 
   <div style="background:#1e3a5f;color:#fff;padding:18px 24px;border-radius:8px;margin-bottom:20px">
@@ -1079,11 +1089,11 @@ def build_html(now, indices_data, sig_eu, sig_etf, snp, scouting, decouvertes, n
     </div>
   </div>
 
-  <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px;overflow-x:auto">
+  <div class="section-block" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:12px">
     <div style="font-weight:bold;margin-bottom:8px;color:#374151">Indices</div>
-    <table style="border-collapse:collapse;width:100%"><tr>{idx_rows}</tr></table>
+    <table style="border-collapse:collapse;width:100%">{idx_rows}</table>
   </div>
-  {f'<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;margin-bottom:20px;overflow-x:auto"><div style="font-size:11px;color:#6b7280;margin-bottom:4px">Macro</div><table style="border-collapse:collapse"><tr>{macro_rows}</tr></table></div>' if macro_rows else ""}
+  {f'<div class="section-block" style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px;margin-bottom:20px"><div style="font-size:11px;color:#6b7280;margin-bottom:4px">Macro</div><table style="border-collapse:collapse;width:100%"><tr>{macro_rows}</tr></table></div>' if macro_rows else ""}
   {summary_html}
 
   {scouting_html(scouting[0], scouting[1]) if scouting else ""}
