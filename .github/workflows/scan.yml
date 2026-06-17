@@ -2,7 +2,7 @@ name: Daily Market Scan
 
 on:
   schedule:
-    - cron: '0 5 * * 1-5'   # 7h00 Paris (UTC+2 été) — lundi au vendredi
+    - cron: '0 6 * * 1-5'   # 8h00 Paris (UTC+2 été) — lundi au vendredi
   workflow_dispatch:           # permet de lancer manuellement depuis GitHub
 
 env:
